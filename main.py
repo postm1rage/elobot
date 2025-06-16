@@ -3,8 +3,9 @@ from discord.ext import commands
 import logging
 from dotenv import load_dotenv
 import os
-from cogs.verification import VerificationCog
 from config import Config
+from database import db
+import atexit
 
 load_dotenv()
 
