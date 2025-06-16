@@ -236,8 +236,62 @@ async def on_message(message):
             return
 
         try:
-            moderator = await bot.fetch_user(MODERATOR_ID)
+            # Проверка 1: Наличие скриншота
+            if not message.attachments:
+                results_channel = discord.utils.get(message.guild.text_channels, name=RESULTS_CHANNEL_NAME)
+                if results_channel:
+                    embed = discord.Embed(
+                        title="❌ Верификация отклонена (автоматически)",
+                        description=(
+                            f"Игрок {message.author.mention}\n"
+                            f"Причина: Отсутствует скриншот\n"
+                            f"Никнейм: {message.content}"
+                        ),
+                        color=discord.Color.red()
+                    )
+                    await results_channel.send(embed=embed)
+                await message.delete()
+                return
 
+            # Проверка 2: Существующий Discord ID
+            c = db.cursor()
+            c.execute("SELECT 1 FROM players WHERE discordid = ?", (str(message.author.id),))
+            if c.fetchone():
+                results_channel = discord.utils.get(message.guild.text_channels, name=RESULTS_CHANNEL_NAME)
+                if results_channel:
+                    embed = discord.Embed(
+                        title="❌ Верификация отклонена (автоматически)",
+                        description=(
+                            f"Игрок {message.author.mention}\n"
+                            f"Причина: Discord ID уже зарегистрирован\n"
+                            f"Никнейм: {message.content}"
+                        ),
+                        color=discord.Color.red()
+                    )
+                    await results_channel.send(embed=embed)
+                await message.delete()
+                return
+
+            # Проверка 3: Существующее имя игрока
+            c.execute("SELECT 1 FROM players WHERE playername = ?", (message.content.strip(),))
+            if c.fetchone():
+                results_channel = discord.utils.get(message.guild.text_channels, name=RESULTS_CHANNEL_NAME)
+                if results_channel:
+                    embed = discord.Embed(
+                        title="❌ Верификация отклонена (автоматически)",
+                        description=(
+                            f"Игрок {message.author.mention}\n"
+                            f"Причина: Никнейм уже занят\n"
+                            f"Никнейм: {message.content}"
+                        ),
+                        color=discord.Color.red()
+                    )
+                    await results_channel.send(embed=embed)
+                await message.delete()
+                return
+
+            # Если все проверки пройдены - отправляем модератору
+            moderator = await bot.fetch_user(MODERATOR_ID)
             embed = discord.Embed(
                 title="Новая заявка на верификацию",
                 description=f"**Никнейм:** {message.content}\n**Отправитель:** {message.author.mention}",
@@ -249,8 +303,15 @@ async def on_message(message):
             view = VerifyView(message.id, message.guild.id, message.content.strip())
 
             await moderator.send(embed=embed, files=files, view=view)
+
         except Exception as e:
-            print(f"Ошибка: {e}")
+            print(f"Ошибка при обработке верификации: {e}")
+            try:
+                results_channel = discord.utils.get(message.guild.text_channels, name=RESULTS_CHANNEL_NAME)
+                if results_channel:
+                    await results_channel.send(f"⚠️ Ошибка при обработке верификации: {str(e)}")
+            except:
+                pass
 
     await bot.process_commands(message)
 
