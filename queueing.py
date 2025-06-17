@@ -259,9 +259,10 @@ def setup(bot):
 
 
 class ConfirmMatchView(View):
-    def __init__(self, match_id):
+    def __init__(self, match_id, bot):  # Добавляем bot в параметры
         super().__init__(timeout=None)
         self.match_id = match_id
+        self.bot = bot  # Сохраняем экземпляр бота
 
     @discord.ui.button(label="Подтвердить", style=discord.ButtonStyle.green)
     async def confirm_button(
@@ -279,6 +280,7 @@ class ConfirmMatchView(View):
             return
 
         mode, player1, player2, score1, score2 = match
+        mode_name = MODE_NAMES.get(mode, "Unknown")
 
         # Определяем результат
         if score1 > score2:
@@ -289,11 +291,11 @@ class ConfirmMatchView(View):
             result = 0.5  # Ничья
 
         # Получаем текущие рейтинги
-        rating1 = get_player_rating(player1, mode)
-        rating2 = get_player_rating(player2, mode)
+        old_rating1 = get_player_rating(player1, mode)
+        old_rating2 = get_player_rating(player2, mode)
 
         # Рассчитываем новые рейтинги
-        new_rating1, new_rating2 = calculate_elo(rating1, rating2, result)
+        new_rating1, new_rating2 = calculate_elo(old_rating1, old_rating2, result)
 
         # Обновляем рейтинги
         update_player_rating(player1, new_rating1, mode)
@@ -336,6 +338,31 @@ class ConfirmMatchView(View):
             (self.match_id,),
         )
         matches_db.commit()
+
+        # Рассчитываем изменения ELO
+        elo_change1 = new_rating1 - old_rating1
+        elo_change2 = new_rating2 - old_rating2
+
+        # Отправляем отчёт в канал результатов
+        for guild in self.bot.guilds:
+            results_channel = discord.utils.get(
+                guild.text_channels, name="elobot-results"
+            )
+            if results_channel:
+                embed = discord.Embed(
+                    title=f"✅ Матч подтверждён | ID: {self.match_id}",
+                    description=(
+                        f"**Режим:** {mode_name}\n"
+                        f"**Игроки:** {player1} vs {player2}\n"
+                        f"**Счёт:** {score1} - {score2}\n\n"
+                        f"**Изменения ELO ({mode_name}):**\n"
+                        f"{player1}: {old_rating1} → **{new_rating1}** ({'+' if elo_change1 >= 0 else ''}{elo_change1})\n"
+                        f"{player2}: {old_rating2} → **{new_rating2}** ({'+' if elo_change2 >= 0 else ''}{elo_change2})"
+                    ),
+                    color=discord.Color.green(),
+                )
+                await results_channel.send(embed=embed)
+                break  # Отправляем только в первый найденный канал
 
         await interaction.response.send_message("Матч подтвержден!", ephemeral=True)
         await interaction.message.edit(view=None)

@@ -115,6 +115,8 @@ async def playerinfo(ctx, nickname: str):
         await ctx.send(f"Игрок с ником '{nickname}' не найден")
 
 
+
+
 @bot.event
 async def on_message(message):
     if message.author.bot:
@@ -216,8 +218,8 @@ async def on_message(message):
                     )
             except:
                 pass
-
-        await bot.process_commands(message)
+        finally:
+            return
 
     # Обработка результатов матча
     if message.channel.name == "elobot-results" and message.attachments:
@@ -289,7 +291,7 @@ async def on_message(message):
             color=discord.Color.orange(),
         )
 
-        view = ConfirmMatchView(match_id)
+        view = ConfirmMatchView(match_id, bot)
 
         await moderator.send(
             embed=embed,
@@ -297,6 +299,12 @@ async def on_message(message):
             files=[await attachment.to_file() for attachment in message.attachments],
         )
 
+        try:
+            await message.delete()
+            print(f"Сообщение с результатом матча удалено: {message.id}")
+        except Exception as e:
+            print(f"Ошибка при удалении сообщения: {e}")
+        return
     await bot.process_commands(message)
 
 
