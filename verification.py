@@ -149,14 +149,8 @@ async def setup_verified_role(guild):
 
 def setup(bot):
     @bot.event
-    async def on_message(message):
-        if message.author.bot:
-            return
-
-        if message.channel.name == VERIFY_CHANNEL_NAME:
-            if not message.content.strip():
-                await message.delete()
-                return
+    async def handle_verification(message):
+        if message.channel.name == VERIFY_CHANNEL_NAME and not message.author.bot:
 
             try:
                 # Проверка 1: Наличие скриншота
@@ -251,3 +245,4 @@ def setup(bot):
                     pass
 
         await bot.process_commands(message)
+        bot.add_listener(handle_verification, 'on_message')

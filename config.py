@@ -2,36 +2,71 @@ import sqlite3
 import discord
 from discord.ext import commands
 
-# Инициализация базы данных
+# Конфигурационные константы
+VERIFY_CHANNEL_NAME = "elobot-verify"
+VERIFICATION_LOGS_CHANNEL_NAME = "elobot-logs"  # Переименовано для избежания конфликта
+QUEUE_CHANNEL_NAME = "elobot-queue"
+MATCH_RESULTS_CHANNEL_NAME = "elobot-results"
+RESULTS_CHANNEL_NAME = "elobot-results"
+MODERATOR_ID = 296821040221388801
+VERIFIED_ROLE_NAME = "verified"
+DEFAULT_ELO = 1000
+
+# Режимы игры
+MODES = {"any": 0, "station5f": 1, "mots": 2, "12min": 3}
+MODE_NAMES = {0: "Any", 1: "Station 5 flags", 2: "MotS Solo", 3: "12min"}
+
+
+# Инициализация базы данных игроков
 def init_db():
     db = sqlite3.connect("elobotplayers.db")
     c = db.cursor()
 
     c.execute(
         """
-CREATE TABLE IF NOT EXISTS players (
-    playerid INTEGER PRIMARY KEY AUTOINCREMENT,
-    playername TEXT NOT NULL UNIQUE,
-    discordid TEXT NOT NULL UNIQUE,
-    leaderboardplace INTEGER DEFAULT 0,
-    currentelo INTEGER DEFAULT 1000,
-    wins INTEGER DEFAULT 0,
-    losses INTEGER DEFAULT 0,
-    ties INTEGER DEFAULT 0,
-    currentmatches INTEGER DEFAULT 0
-)
-"""
+    CREATE TABLE IF NOT EXISTS players (
+        playerid INTEGER PRIMARY KEY AUTOINCREMENT,
+        playername TEXT NOT NULL UNIQUE,
+        discordid TEXT NOT NULL UNIQUE,
+        leaderboardplace INTEGER DEFAULT 0,
+        currentelo INTEGER DEFAULT 1000,
+        elo_station5f INTEGER DEFAULT 1000,
+        elo_mots INTEGER DEFAULT 1000,
+        elo_12min INTEGER DEFAULT 1000,
+        wins INTEGER DEFAULT 0,
+        losses INTEGER DEFAULT 0,
+        ties INTEGER DEFAULT 0,
+        currentmatches INTEGER DEFAULT 0,
+        in_queue INTEGER DEFAULT 0
     )
-
+    """
+    )
     db.commit()
     return db
 
-# Конфигурационные константы
-VERIFY_CHANNEL_NAME = "elobot-verify"
-RESULTS_CHANNEL_NAME = "elobot-logs"
-MODERATOR_ID = 296821040221388801
-VERIFIED_ROLE_NAME = "verified"
-DEFAULT_ELO = 1000
+
+# Инициализация базы данных матчей
+def init_matches_db():
+    matches_db = sqlite3.connect("elobotmatches.db")
+    c = matches_db.cursor()
+
+    c.execute(
+        """
+    CREATE TABLE IF NOT EXISTS matches (
+        matchid INTEGER PRIMARY KEY AUTOINCREMENT,
+        mode INTEGER NOT NULL,
+        player1 TEXT NOT NULL,
+        player2 TEXT NOT NULL,
+        isover INTEGER DEFAULT 0,
+        player1score INTEGER,
+        player2score INTEGER,
+        isverified INTEGER DEFAULT 0
+    )
+    """
+    )
+    matches_db.commit()
+    return matches_db
+
 
 # Инициализация бота
 intents = discord.Intents.default()
@@ -43,5 +78,6 @@ bot = commands.Bot(
     command_prefix="!",
 )
 
-# Инициализация базы данных
+# Инициализация баз данных
 db = init_db()
+matches_db = init_matches_db()
