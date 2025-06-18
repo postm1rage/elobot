@@ -16,6 +16,18 @@ DEFAULT_ELO = 1000
 MODES = {"any": 0, "station5f": 1, "mots": 2, "12min": 3}
 MODE_NAMES = {0: "Any", 1: "Station 5 flags", 2: "MotS Solo", 3: "12min"}
 
+LEADERBOARD_MODES = {
+    "overall": ("currentelo", "wins", "losses", "ties"),
+    "station5flags": (
+        "elo_station5f",
+        "wins_station5f",
+        "losses_station5f",
+        "ties_station5f",
+    ),
+    "mots": ("elo_mots", "wins_mots", "losses_mots", "ties_mots"),
+    "12min": ("elo_12min", "wins_12min", "losses_12min", "ties_12min"),
+}
+
 
 # Инициализация базы данных игроков
 def init_db():
@@ -24,22 +36,30 @@ def init_db():
 
     c.execute(
         """
-    CREATE TABLE IF NOT EXISTS players (
-        playerid INTEGER PRIMARY KEY AUTOINCREMENT,
-        playername TEXT NOT NULL UNIQUE,
-        discordid TEXT NOT NULL UNIQUE,
-        leaderboardplace INTEGER DEFAULT 0,
-        currentelo INTEGER DEFAULT 1000,
-        elo_station5f INTEGER DEFAULT 1000,
-        elo_mots INTEGER DEFAULT 1000,
-        elo_12min INTEGER DEFAULT 1000,
-        wins INTEGER DEFAULT 0,
-        losses INTEGER DEFAULT 0,
-        ties INTEGER DEFAULT 0,
-        currentmatches INTEGER DEFAULT 0,
-        in_queue INTEGER DEFAULT 0
-    )
-    """
+CREATE TABLE IF NOT EXISTS players (
+    playerid INTEGER PRIMARY KEY AUTOINCREMENT,
+    playername TEXT NOT NULL UNIQUE,
+    discordid TEXT NOT NULL UNIQUE,
+    currentelo INTEGER DEFAULT 1000,
+    elo_station5f INTEGER DEFAULT 1000,
+    elo_mots INTEGER DEFAULT 1000,
+    elo_12min INTEGER DEFAULT 1000,
+    wins INTEGER DEFAULT 0,
+    losses INTEGER DEFAULT 0,
+    ties INTEGER DEFAULT 0,
+    wins_station5f INTEGER DEFAULT 0,
+    losses_station5f INTEGER DEFAULT 0,
+    ties_station5f INTEGER DEFAULT 0,
+    wins_mots INTEGER DEFAULT 0,
+    losses_mots INTEGER DEFAULT 0,
+    ties_mots INTEGER DEFAULT 0,
+    wins_12min INTEGER DEFAULT 0,
+    losses_12min INTEGER DEFAULT 0,
+    ties_12min INTEGER DEFAULT 0,
+    currentmatches INTEGER DEFAULT 0,
+    in_queue INTEGER DEFAULT 0
+)
+"""
     )
     db.commit()
     return db

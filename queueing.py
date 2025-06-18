@@ -68,6 +68,8 @@ def get_player_rating(nickname, mode):
 
 def update_player_rating(nickname, new_rating, mode):
     c = db.cursor()
+
+    # Обновляем ELO для конкретного режима
     if mode == MODES["station5f"]:
         c.execute(
             "UPDATE players SET elo_station5f = ? WHERE playername = ?",
@@ -87,12 +89,13 @@ def update_player_rating(nickname, new_rating, mode):
     # Обновляем суммарный ELO
     c.execute(
         """
-        UPDATE players 
-        SET currentelo = elo_station5f + elo_mots + elo_12min 
-        WHERE playername = ?
-        """,
+    UPDATE players 
+    SET currentelo = elo_station5f + elo_mots + elo_12min 
+    WHERE playername = ?
+    """,
         (nickname,),
     )
+
     db.commit()
 
 
