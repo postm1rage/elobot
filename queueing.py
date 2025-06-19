@@ -4,6 +4,7 @@ from config import db, matches_db, MODES, MODE_NAMES, VERIFIED_ROLE_NAME
 import asyncio
 import sqlite3
 from datetime import datetime
+import random
 
 # Очереди для каждого режима
 queues = {mode: [] for mode in MODES.values()}
@@ -35,7 +36,7 @@ class ModeSelectView(View):
 
         self.selected_mode = int(self.select.values[0])
         await interaction.response.defer()
-        self.stop()
+        self.stop()  
 
 
 def calculate_elo(player1_rating, player2_rating, result, K=40, C=400, max_rating=4000):
@@ -102,65 +103,136 @@ def update_player_rating(nickname, new_rating, mode):
 async def find_match(bot):
     while True:
         await asyncio.sleep(5)
-        for mode, queue in queues.items():
+        # Обработка стандартных режимов (1, 2, 3)
+        for mode in [1, 2, 3]:
+            queue = queues[mode]
             if len(queue) >= 2:
-                # Сортируем по времени ожидания
                 queue.sort(key=lambda x: x["join_time"])
-
                 player1 = queue.pop(0)
-                player2 = None
                 min_diff = float("inf")
+                candidate = None
+                candidate_idx = None
 
-                # Ищем лучшую пару по ELO
-                for i, p in enumerate(queue):
+                for idx, p in enumerate(queue):
                     diff = abs(player1["rating"] - p["rating"])
                     if diff < min_diff:
                         min_diff = diff
-                        player2_idx = i
+                        candidate = p
+                        candidate_idx = idx
 
-                player2 = queue.pop(player2_idx)
+                if candidate:
+                    player2 = queue.pop(candidate_idx)
+                    # Обновляем статус в базе
+                    c = db.cursor()
+                    c.execute(
+                        "UPDATE players SET in_queue = 0 WHERE playername IN (?, ?)",
+                        (player1["nickname"], player2["nickname"]),
+                    )
+                    db.commit()
 
-                # Обновляем статус в базе
+                    # Создаем запись о матче
+                    c = matches_db.cursor()
+                    c.execute(
+                        """
+                        INSERT INTO matches (mode, player1, player2)
+                        VALUES (?, ?, ?)
+                        """,
+                        (mode, player1["nickname"], player2["nickname"]),
+                    )
+                    matches_db.commit()
+                    match_id = c.lastrowid
+
+                    # Уведомляем игроков
+                    channel = bot.get_channel(player1["channel_id"])
+                    mode_name = MODE_NAMES.get(mode, "Unknown")
+
+                    embed = discord.Embed(
+                        title="🎮 Матч найден!",
+                        description=(
+                            f"**Режим:** {mode_name}\n"
+                            f"**Match ID:** {match_id}\n"
+                            f"**Игрок 1:** {player1['nickname']}\n"
+                            f"**Игрок 2:** {player2['nickname']}"
+                        ),
+                        color=discord.Color.green(),
+                    )
+                    await channel.send(embed=embed)
+
+                    # Личные сообщения
+                    try:
+                        user1 = await bot.fetch_user(player1["discord_id"])
+                        user2 = await bot.fetch_user(player2["discord_id"])
+                        await user1.send(
+                            f"Ваш матч #{match_id} начинается! Режим: {mode_name}"
+                        )
+                        await user2.send(
+                            f"Ваш матч #{match_id} начинается! Режим: {mode_name}"
+                        )
+                    except:
+                        pass
+
+        # Обработка режима "Any" (0)
+        queue_any = queues[0]
+        if queue_any:
+            # Поиск в других режимах (1, 2, 3)
+            min_diff = float("inf")
+            candidate = None
+            candidate_mode = None
+            candidate_idx = None
+
+            for mode in [1, 2, 3]:
+                queue = queues[mode]
+                for idx, p in enumerate(queue):
+                    diff = abs(queue_any[0]["rating"] - p["rating"])
+                    if diff < min_diff:
+                        min_diff = diff
+                        candidate = p
+                        candidate_mode = mode
+                        candidate_idx = idx
+
+            if candidate:
+                player_any = queue_any.pop(0)
+                queues[candidate_mode].pop(candidate_idx)
+
+                # Обновляем базу данных
                 c = db.cursor()
                 c.execute(
                     "UPDATE players SET in_queue = 0 WHERE playername IN (?, ?)",
-                    (player1["nickname"], player2["nickname"]),
+                    (player_any["nickname"], candidate["nickname"]),
                 )
                 db.commit()
 
-                # Создаем запись о матче
+                # Создаем матч в режиме кандидата
                 c = matches_db.cursor()
                 c.execute(
                     """
                     INSERT INTO matches (mode, player1, player2)
                     VALUES (?, ?, ?)
                     """,
-                    (mode, player1["nickname"], player2["nickname"]),
+                    (candidate_mode, player_any["nickname"], candidate["nickname"]),
                 )
                 matches_db.commit()
                 match_id = c.lastrowid
 
-                # Уведомляем игроков
-                channel = bot.get_channel(player1["channel_id"])
-                mode_name = MODE_NAMES.get(mode, "Unknown")
+                # Уведомление
+                channel = bot.get_channel(player_any["channel_id"])
+                mode_name = MODE_NAMES.get(candidate_mode, "Unknown")
 
                 embed = discord.Embed(
                     title="🎮 Матч найден!",
                     description=(
                         f"**Режим:** {mode_name}\n"
                         f"**Match ID:** {match_id}\n"
-                        f"**Игрок 1:** {player1['nickname']}\n"
-                        f"**Игрок 2:** {player2['nickname']}"
+                        f"**Игрок 1:** {player_any['nickname']}\n"
+                        f"**Игрок 2:** {candidate['nickname']}"
                     ),
                     color=discord.Color.green(),
                 )
-
                 await channel.send(embed=embed)
 
-                # Личные сообщения
                 try:
-                    user1 = await bot.fetch_user(player1["discord_id"])
-                    user2 = await bot.fetch_user(player2["discord_id"])
+                    user1 = await bot.fetch_user(player_any["discord_id"])
+                    user2 = await bot.fetch_user(candidate["discord_id"])
                     await user1.send(
                         f"Ваш матч #{match_id} начинается! Режим: {mode_name}"
                     )
@@ -169,6 +241,74 @@ async def find_match(bot):
                     )
                 except:
                     pass
+
+            else:
+                # Поиск внутри очереди "Any"
+                if len(queue_any) >= 2:
+                    player1 = queue_any.pop(0)
+                    min_diff = float("inf")
+                    candidate = None
+                    candidate_idx = None
+
+                    for idx, p in enumerate(queue_any):
+                        diff = abs(player1["rating"] - p["rating"])
+                        if diff < min_diff:
+                            min_diff = diff
+                            candidate = p
+                            candidate_idx = idx
+
+                    if candidate:
+                        player2 = queue_any.pop(candidate_idx)
+
+                        # Обновляем базу
+                        c = db.cursor()
+                        c.execute(
+                            "UPDATE players SET in_queue = 0 WHERE playername IN (?, ?)",
+                            (player1["nickname"], player2["nickname"]),
+                        )
+                        db.commit()
+
+                        # Случайный режим
+                        random_mode = random.choice([1, 2, 3])
+                        mode_name = MODE_NAMES.get(random_mode, "Unknown")
+
+                        # Создаем матч
+                        c = matches_db.cursor()
+                        c.execute(
+                            """
+                            INSERT INTO matches (mode, player1, player2)
+                            VALUES (?, ?, ?)
+                            """,
+                            (random_mode, player1["nickname"], player2["nickname"]),
+                        )
+                        matches_db.commit()
+                        match_id = c.lastrowid
+
+                        # Уведомление
+                        channel = bot.get_channel(player1["channel_id"])
+                        embed = discord.Embed(
+                            title="🎮 Матч найден!",
+                            description=(
+                                f"**Режим:** {mode_name}\n"
+                                f"**Match ID:** {match_id}\n"
+                                f"**Игрок 1:** {player1['nickname']}\n"
+                                f"**Игрок 2:** {player2['nickname']}"
+                            ),
+                            color=discord.Color.green(),
+                        )
+                        await channel.send(embed=embed)
+
+                        try:
+                            user1 = await bot.fetch_user(player1["discord_id"])
+                            user2 = await bot.fetch_user(player2["discord_id"])
+                            await user1.send(
+                                f"Ваш матч #{match_id} начинается! Режим: {mode_name}"
+                            )
+                            await user2.send(
+                                f"Ваш матч #{match_id} начинается! Режим: {mode_name}"
+                            )
+                        except:
+                            pass
 
 
 def setup(bot):
@@ -203,7 +343,9 @@ def setup(bot):
         view = ModeSelectView(ctx.author.id)
         msg = await ctx.send("Выберите режим игры:", view=view)
 
-        if await view.wait() or not view.selected_mode:
+        await view.wait()
+
+        if view.selected_mode is None:  # Таймаут или отмена
             await msg.edit(content="⌛ Время выбора истекло", view=None)
             return
 
