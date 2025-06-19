@@ -4,10 +4,10 @@ from discord.ext import commands
 
 # Конфигурационные константы
 VERIFY_CHANNEL_NAME = "elobot-verify"
-VERIFICATION_LOGS_CHANNEL_NAME = "elobot-logs"  # Переименовано для избежания конфликта
+VERIFICATION_LOGS_CHANNEL_NAME = "elobot-logs"
 QUEUE_CHANNEL_NAME = "elobot-queue"
 MATCH_RESULTS_CHANNEL_NAME = "elobot-results"
-RESULTS_CHANNEL_NAME = "elobot-results"
+RESULTS_CHANNEL_NAME = "elobot-logs"
 MODERATOR_ID = 296821040221388801
 VERIFIED_ROLE_NAME = "verified"
 DEFAULT_ELO = 1000

@@ -36,7 +36,7 @@ class ModeSelectView(View):
 
         self.selected_mode = int(self.select.values[0])
         await interaction.response.defer()
-        self.stop()  
+        self.stop()
 
 
 def calculate_elo(player1_rating, player2_rating, result, K=40, C=400, max_rating=4000):
@@ -401,6 +401,70 @@ def setup(bot):
         )
         db.commit()
         await ctx.send("✅ Вы вышли из очереди")
+
+    @bot.command()
+    async def queue(ctx):
+        # Проверка канала
+        if ctx.channel.name != "elobot-queue":
+            return
+
+        # Создаем Embed
+        embed = discord.Embed(
+            title="📊 Статистика очередей", color=discord.Color.blue()
+        )
+
+        # Собираем статистику по режимам
+        display_order = [
+            (MODES["mots"], "MotS Solo", "🔫"),
+            (MODES["12min"], "12 Minute", "⏱️"),
+            (MODES["station5f"], "Station 5 Flags", "🚩"),
+            (MODES["any"], "Any Mode", "🎲"),
+        ]
+
+        # Получаем количество игроков в каждой очереди
+        for mode_id, mode_name, emoji in display_order:
+            count = len(queues[mode_id])
+            embed.add_field(
+                name=f"{emoji} {mode_name}",
+                value=f"`{count}` игроков в очереди",
+                inline=True,
+            )
+
+        # Получаем общее количество игроков в активных матчах
+        c = db.cursor()
+        c.execute("SELECT COUNT(*) FROM players WHERE in_queue = 1")
+        total_in_queue = c.fetchone()[0] or 0
+
+        # Получаем количество игроков в активных матчах
+        c = matches_db.cursor()
+        c.execute(
+            """
+            SELECT COUNT(DISTINCT player) 
+            FROM (
+                SELECT player1 AS player FROM matches WHERE isover = 0
+                UNION ALL
+                SELECT player2 AS player FROM matches WHERE isover = 0
+            )
+        """
+        )
+        total_in_matches = c.fetchone()[0] or 0
+
+        # Общее количество игроков "в игре"
+        total_in_game = total_in_queue + total_in_matches
+
+        # Добавляем общую информацию
+        embed.description = (
+            f"**Всего игроков в игре:** `{total_in_game}`\n"
+            f"• В очередях: `{total_in_queue}`\n"
+            f"• В активных матчах: `{total_in_matches}`"
+        )
+
+        # Добавляем время последнего обновления
+        embed.set_footer(
+            text=f"Последнее обновление: {datetime.now().strftime('%H:%M:%S')}"
+        )
+
+        await ctx.send(embed=embed)
 
 
 class ConfirmMatchView(View):
