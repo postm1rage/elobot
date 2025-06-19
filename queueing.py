@@ -1,13 +1,250 @@
 import discord
 from discord.ui import View, Button, Select
-from config import db, matches_db, MODES, MODE_NAMES, VERIFIED_ROLE_NAME
+from config import db, matches_db, MODES, MODE_NAMES, VERIFIED_ROLE_NAME, MAPS
 import asyncio
 import sqlite3
 from datetime import datetime
 import random
 
+
+global_bot = None
 # Очереди для каждого режима
 queues = {mode: [] for mode in MODES.values()}
+
+# Глобальные переменные для отслеживания процесса черкания
+map_voting = (
+    {}
+)  # {match_id: {"players": [p1, p2], "remaining_maps": [...], "current_player": discord_id}}
+
+
+# Объявляем функцию send_map_selection перед использованием
+async def send_map_selection(match_id):
+    global global_bot, map_voting
+    if match_id not in map_voting:
+        return
+
+    voting = map_voting[match_id]
+    current_player = voting["current_player"]
+    remaining_maps = voting["remaining_maps"]
+
+    try:
+        player1 = await global_bot.fetch_user(voting["players"][0])
+        player2 = await global_bot.fetch_user(voting["players"][1])
+    except:
+        return
+
+    # Создаем View для выбора карты
+    view = MapSelectionView(match_id, remaining_maps, current_player)
+
+    # Отправляем сообщение текущему игроку
+    try:
+        msg = await global_bot.get_user(current_player).send(
+            f"**Ваш ход!** Выберите карту для вычеркивания:", view=view
+        )
+        voting["messages"][current_player] = msg
+    except:
+        pass
+
+    # Уведомляем другого игрока
+    other_player = (
+        voting["players"][1]
+        if current_player == voting["players"][0]
+        else voting["players"][0]
+    )
+    try:
+        await global_bot.get_user(other_player).send(
+            f"Ожидайте своего хода. Сейчас выбирает {global_bot.get_user(current_player).mention}."
+        )
+    except:
+        pass
+
+
+class MapSelectionView(View):
+    def __init__(self, match_id, maps, player_id):
+        super().__init__(timeout=120)
+        self.match_id = match_id
+        self.player_id = player_id
+
+        for map_name in maps:
+            button = Button(
+                label=map_name,
+                style=discord.ButtonStyle.secondary,
+                custom_id=f"map_{map_name}",
+            )
+            button.callback = lambda i, b=button: self.button_callback(i, b)
+            self.add_item(button)
+
+    async def button_callback(self, interaction: discord.Interaction, button: Button):
+        global map_voting
+        if self.match_id not in map_voting:
+            await interaction.response.send_message(
+                "Процесс выбора карты завершен", ephemeral=True
+            )
+            return
+
+        voting = map_voting[self.match_id]
+        selected_map = button.label
+
+        # Удаляем выбранную карту
+        if selected_map in voting["remaining_maps"]:
+            voting["remaining_maps"].remove(selected_map)
+
+        voting["last_selected"] = selected_map
+
+        # Если осталась только одна карта - завершаем процесс
+        if len(voting["remaining_maps"]) == 1:  # Изменено с <= 1 на == 1
+            final_map = voting["remaining_maps"][0]
+            print(f"Черкание завершено! Карта: {final_map}")
+
+            await interaction.response.edit_message(
+                content=f"Вы вычеркнули карту **{selected_map}**", view=None
+            )
+            await self.finish_map_selection()
+            return
+        # Если карт не осталось вообще (маловероятно, но на всякий случай)
+        elif not voting["remaining_maps"]:
+            final_map = voting.get("last_selected", "Станция")
+            print(f"Черкание завершено! Карта: {final_map} (последняя вычеркнутая)")
+
+            await interaction.response.edit_message(
+                content=f"Вы вычеркнули карту **{selected_map}**", view=None
+            )
+            await self.finish_map_selection()
+            return
+
+        # Переключаем ход
+        voting["current_player"] = (
+            voting["players"][1]
+            if voting["current_player"] == voting["players"][0]
+            else voting["players"][0]
+        )
+
+        await interaction.response.edit_message(
+            content=f"Вы вычеркнули карту **{selected_map}**", view=None
+        )
+        await send_map_selection(self.match_id)
+
+    async def auto_select_map(self):
+        global map_voting
+        if self.match_id not in map_voting:
+            return
+
+        voting = map_voting[self.match_id]
+
+        # Если осталась только одна карта - завершаем
+        if len(voting["remaining_maps"]) == 1:
+            return
+
+        # Выбираем случайную карту
+        selected_map = random.choice(voting["remaining_maps"])
+        voting["remaining_maps"].remove(selected_map)
+        voting["last_selected"] = selected_map
+
+        # Если после удаления осталась одна карта
+        if len(voting["remaining_maps"]) == 1:
+            try:
+                await voting["messages"][self.player_id].edit(
+                    content=f"⏱ Вы не успели выбрать! Автоматически вычеркнута карта **{selected_map}**",
+                    view=None,
+                )
+            except:
+                pass
+            await self.finish_map_selection()
+            return
+
+        # Переключаем ход
+        voting["current_player"] = (
+            voting["players"][1]
+            if voting["current_player"] == voting["players"][0]
+            else voting["players"][0]
+        )
+
+        try:
+            await voting["messages"][self.player_id].edit(
+                content=f"⏱ Вы не успели выбрать! Автоматически вычеркнута карта **{selected_map}**",
+                view=None,
+            )
+        except:
+            pass
+
+        await send_map_selection(self.match_id)
+
+    async def finish_map_selection(self):
+        global map_voting
+        if self.match_id not in map_voting:
+            print(f"ОШИБКА: Данные матча {self.match_id} потеряны!")
+            return
+
+        voting = map_voting.get(self.match_id)
+        if not voting or not voting.get("remaining_maps"):
+            print(f"ОШИБКА: Нет данных о картах для матча {self.match_id}")
+            return
+        selected_map = (
+            voting["remaining_maps"][0] if voting["remaining_maps"] else "Станция"
+        )
+
+        # Сохраняем выбранную карту в базе данных
+        c = matches_db.cursor()
+        c.execute(
+            "UPDATE matches SET map = ? WHERE matchid = ?",
+            (selected_map, self.match_id),
+        )
+        matches_db.commit()
+
+        # Отправляем результат обоим игрокам
+        for player_id in voting["players"]:
+            # Определяем соперника
+            opponent_id = next(pid for pid in voting["players"] if pid != player_id)
+
+            # Безопасное получение никнейма
+            if (
+                "player_nicknames" in voting
+                and opponent_id in voting["player_nicknames"]
+            ):
+                opponent_nickname = voting["player_nicknames"][opponent_id]
+            else:
+                # Если нет в словаре, попробуем получить из БД
+                try:
+                    c_db = db.cursor()
+                    # Исправленная строка: правильный синтаксис параметра
+                    c_db.execute(
+                        "SELECT playername FROM players WHERE discordid = ?",
+                        (str(opponent_id),),  # <-- Запятая внутри кортежа
+                    )
+                    player_data = c_db.fetchone()
+                    opponent_nickname = (
+                        player_data[0] if player_data else "Неизвестный игрок"
+                    )
+                except Exception as e:
+                    print(f"Ошибка при получении никнейма из БД: {e}")
+                    opponent_nickname = "Неизвестный игрок"
+
+            try:
+                # Получаем информацию о сопернике
+                opponent_user = await global_bot.fetch_user(opponent_id)
+                discord_tag = f"{opponent_user.name}#{opponent_user.discriminator}"
+            except:
+                discord_tag = "неизвестен"
+
+            # Создаем embed
+            embed = discord.Embed(
+                title="Черкание завершено", color=discord.Color.green()
+            )
+            embed.add_field(name="Карта", value=f"**{selected_map}**", inline=False)
+            embed.add_field(
+                name="Противник", value=f"**{opponent_nickname}**", inline=False
+            )
+            embed.add_field(name="Discord противника", value=discord_tag, inline=False)
+            embed.set_footer(text=f"Match ID: {self.match_id}")
+
+            try:
+                await global_bot.get_user(player_id).send(embed=embed)
+            except Exception as e:
+                print(f"Ошибка при отправке сообщения игроку {player_id}: {e}")
+
+        # Удаляем данные о голосовании
+        if self.match_id in map_voting:
+            del map_voting[self.match_id]
 
 
 class ModeSelectView(View):
@@ -100,19 +337,26 @@ def update_player_rating(nickname, new_rating, mode):
     db.commit()
 
 
-async def find_match(bot):
+async def find_match():
+    global global_bot
     while True:
         await asyncio.sleep(5)
+        print(
+            f"Checking queues: {[len(q) for q in queues.values()]}"
+        )  # Отладочная информация
+
         # Обработка стандартных режимов (1, 2, 3)
-        for mode in [1, 2, 3]:
+        for mode in [MODES["station5f"], MODES["mots"], MODES["12min"]]:
             queue = queues[mode]
             if len(queue) >= 2:
+                # Сортируем по времени ожидания
                 queue.sort(key=lambda x: x["join_time"])
                 player1 = queue.pop(0)
                 min_diff = float("inf")
                 candidate = None
                 candidate_idx = None
 
+                # Ищем лучшую пару по ELO
                 for idx, p in enumerate(queue):
                     diff = abs(player1["rating"] - p["rating"])
                     if diff < min_diff:
@@ -120,8 +364,9 @@ async def find_match(bot):
                         candidate = p
                         candidate_idx = idx
 
-                if candidate:
+                if candidate_idx is not None:
                     player2 = queue.pop(candidate_idx)
+
                     # Обновляем статус в базе
                     c = db.cursor()
                     c.execute(
@@ -143,7 +388,7 @@ async def find_match(bot):
                     match_id = c.lastrowid
 
                     # Уведомляем игроков
-                    channel = bot.get_channel(player1["channel_id"])
+                    channel = global_bot.get_channel(player1["channel_id"])
                     mode_name = MODE_NAMES.get(mode, "Unknown")
 
                     embed = discord.Embed(
@@ -160,19 +405,34 @@ async def find_match(bot):
 
                     # Личные сообщения
                     try:
-                        user1 = await bot.fetch_user(player1["discord_id"])
-                        user2 = await bot.fetch_user(player2["discord_id"])
+                        user1 = await global_bot.fetch_user(player1["discord_id"])
+                        user2 = await global_bot.fetch_user(player2["discord_id"])
                         await user1.send(
                             f"Ваш матч #{match_id} начинается! Режим: {mode_name}"
                         )
                         await user2.send(
                             f"Ваш матч #{match_id} начинается! Режим: {mode_name}"
                         )
-                    except:
-                        pass
+                    except Exception as e:
+                        print(f"Error sending DM: {e}")
+
+                    # Для MotS и 12min инициируем черкание карт
+                    if mode in [MODES["mots"], MODES["12min"]]:
+                        # Везде где создается map_voting добавляем player_nicknames
+                        map_voting[match_id] = {
+                            "players": [player1["discord_id"], player2["discord_id"]],
+                            "player_nicknames": {  # Добавляем словарь с никнеймами
+                                player1["discord_id"]: player1["nickname"],
+                                player2["discord_id"]: player2["nickname"],
+                            },
+                            "remaining_maps": MAPS.copy(),
+                            "current_player": player1["discord_id"],
+                            "messages": {},
+                        }
+                        await send_map_selection(match_id)
 
         # Обработка режима "Any" (0)
-        queue_any = queues[0]
+        queue_any = queues[MODES["any"]]
         if queue_any:
             # Поиск в других режимах (1, 2, 3)
             min_diff = float("inf")
@@ -180,7 +440,7 @@ async def find_match(bot):
             candidate_mode = None
             candidate_idx = None
 
-            for mode in [1, 2, 3]:
+            for mode in [MODES["station5f"], MODES["mots"], MODES["12min"]]:
                 queue = queues[mode]
                 for idx, p in enumerate(queue):
                     diff = abs(queue_any[0]["rating"] - p["rating"])
@@ -215,7 +475,7 @@ async def find_match(bot):
                 match_id = c.lastrowid
 
                 # Уведомление
-                channel = bot.get_channel(player_any["channel_id"])
+                channel = global_bot.get_channel(player_any["channel_id"])
                 mode_name = MODE_NAMES.get(candidate_mode, "Unknown")
 
                 embed = discord.Embed(
@@ -231,16 +491,30 @@ async def find_match(bot):
                 await channel.send(embed=embed)
 
                 try:
-                    user1 = await bot.fetch_user(player_any["discord_id"])
-                    user2 = await bot.fetch_user(candidate["discord_id"])
+                    user1 = await global_bot.fetch_user(player_any["discord_id"])
+                    user2 = await global_bot.fetch_user(candidate["discord_id"])
                     await user1.send(
                         f"Ваш матч #{match_id} начинается! Режим: {mode_name}"
                     )
                     await user2.send(
                         f"Ваш матч #{match_id} начинается! Режим: {mode_name}"
                     )
-                except:
-                    pass
+                except Exception as e:
+                    print(f"Error sending DM: {e}")
+
+                # Для MotS и 12min инициируем черкание карт
+                if candidate_mode in [MODES["mots"], MODES["12min"]]:
+                    map_voting[match_id] = {
+                        "players": [player_any["discord_id"], candidate["discord_id"]],
+                        "player_nicknames": {  # Добавляем словарь с никнеймами
+                            player_any["discord_id"]: player_any["nickname"],
+                            candidate["discord_id"]: candidate["nickname"],
+                        },
+                        "remaining_maps": MAPS.copy(),
+                        "current_player": player_any["discord_id"],
+                        "messages": {},
+                    }
+                    await send_map_selection(match_id)
 
             else:
                 # Поиск внутри очереди "Any"
@@ -257,7 +531,7 @@ async def find_match(bot):
                             candidate = p
                             candidate_idx = idx
 
-                    if candidate:
+                    if candidate_idx is not None:
                         player2 = queue_any.pop(candidate_idx)
 
                         # Обновляем базу
@@ -269,7 +543,9 @@ async def find_match(bot):
                         db.commit()
 
                         # Случайный режим
-                        random_mode = random.choice([1, 2, 3])
+                        random_mode = random.choice(
+                            [MODES["station5f"], MODES["mots"], MODES["12min"]]
+                        )
                         mode_name = MODE_NAMES.get(random_mode, "Unknown")
 
                         # Создаем матч
@@ -285,7 +561,7 @@ async def find_match(bot):
                         match_id = c.lastrowid
 
                         # Уведомление
-                        channel = bot.get_channel(player1["channel_id"])
+                        channel = global_bot.get_channel(player1["channel_id"])
                         embed = discord.Embed(
                             title="🎮 Матч найден!",
                             description=(
@@ -299,19 +575,39 @@ async def find_match(bot):
                         await channel.send(embed=embed)
 
                         try:
-                            user1 = await bot.fetch_user(player1["discord_id"])
-                            user2 = await bot.fetch_user(player2["discord_id"])
+                            user1 = await global_bot.fetch_user(player1["discord_id"])
+                            user2 = await global_bot.fetch_user(player2["discord_id"])
                             await user1.send(
                                 f"Ваш матч #{match_id} начинается! Режим: {mode_name}"
                             )
                             await user2.send(
                                 f"Ваш матч #{match_id} начинается! Режим: {mode_name}"
                             )
-                        except:
-                            pass
+                        except Exception as e:
+                            print(f"Error sending DM: {e}")
+
+                        # Для MotS и 12min инициируем черкание карт
+                        if random_mode in [MODES["mots"], MODES["12min"]]:
+                            map_voting[match_id] = {
+                                "players": [
+                                    player1["discord_id"],
+                                    player2["discord_id"],
+                                ],
+                                "player_nicknames": {  # Добавляем словарь с никнеймами
+                                    player1["discord_id"]: player1["nickname"],
+                                    player2["discord_id"]: player2["nickname"],
+                                },
+                                "remaining_maps": MAPS.copy(),
+                                "current_player": player1["discord_id"],
+                                "messages": {},
+                            }
+                            await send_map_selection(match_id)
 
 
 def setup(bot):
+    global global_bot
+    global_bot = bot
+
     @bot.command()
     async def play(ctx):
         # Проверка канала
@@ -479,7 +775,7 @@ class ConfirmMatchView(View):
     ):
         c = matches_db.cursor()
         c.execute(
-            "SELECT mode, player1, player2, player1score, player2score FROM matches WHERE matchid = ?",
+            "SELECT mode, player1, player2, player1score, player2score, map FROM matches WHERE matchid = ?",
             (self.match_id,),
         )
         match = c.fetchone()
@@ -488,7 +784,7 @@ class ConfirmMatchView(View):
             await interaction.response.send_message("Матч не найден", ephemeral=True)
             return
 
-        mode, player1, player2, score1, score2 = match
+        mode, player1, player2, score1, score2, map_name = match
         mode_name = MODE_NAMES.get(mode, "Unknown")
 
         # Определяем результат
@@ -551,6 +847,20 @@ class ConfirmMatchView(View):
         # Рассчитываем изменения ELO
         elo_change1 = new_rating1 - old_rating1
         elo_change2 = new_rating2 - old_rating2
+
+        embed = discord.Embed(
+            title=f"✅ Матч подтверждён | ID: {self.match_id}",
+            description=(
+                f"**Режим:** {mode_name}\n"
+                f"**Карта:** {map_name if map_name else 'не выбрана'}\n"  # Добавлено
+                f"**Игроки:** {player1} vs {player2}\n"
+                f"**Счёт:** {score1} - {score2}\n\n"
+                f"**Изменения ELO ({mode_name}):**\n"
+                f"{player1}: {old_rating1} → **{new_rating1}** ({'+' if elo_change1 >= 0 else ''}{elo_change1})\n"
+                f"{player2}: {old_rating2} → **{new_rating2}** ({'+' if elo_change2 >= 0 else ''}{elo_change2})"
+            ),
+            color=discord.Color.green(),
+        )
 
         # Отправляем отчёт в канал результатов
         for guild in self.bot.guilds:

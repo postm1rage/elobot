@@ -2,6 +2,9 @@ import sqlite3
 import discord
 from discord.ext import commands
 
+# Карты для черкания
+MAPS = ["Бумбокс", "Дуалити", "Зона", "Сандал", "Станция", "Мостик", "Магадан"]
+
 # Конфигурационные константы
 VERIFY_CHANNEL_NAME = "elobot-verify"
 VERIFICATION_LOGS_CHANNEL_NAME = "elobot-logs"
@@ -80,10 +83,20 @@ def init_matches_db():
         isover INTEGER DEFAULT 0,
         player1score INTEGER,
         player2score INTEGER,
-        isverified INTEGER DEFAULT 0
+        isverified INTEGER DEFAULT 0,
+        map TEXT
     )
     """
     )
+    # Проверяем существование колонки map
+    c.execute("PRAGMA table_info(matches)")
+    columns = [info[1] for info in c.fetchall()]
+
+    if "map" not in columns:
+        # Добавляем колонку map
+        c.execute("ALTER TABLE matches ADD COLUMN map TEXT")
+        print("Добавлена колонка 'map' в таблицу 'matches'")
+
     matches_db.commit()
     return matches_db
 

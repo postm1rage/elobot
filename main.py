@@ -61,7 +61,7 @@ async def on_ready():
 @bot.event
 async def setup_hook():
     """Асинхронный хук для запуска фоновых задач"""
-    bot.loop.create_task(find_match(bot))
+    bot.loop.create_task(find_match())
 
 
 @bot.command()
