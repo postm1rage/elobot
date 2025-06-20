@@ -632,10 +632,11 @@ def setup(bot):
             await ctx.send("❌ Требуется верификация для поиска игры")
             return
 
-        # Проверка активного матча
+        # Получаем информацию об игроке
         c = db.cursor()
         c.execute(
-            "SELECT in_queue FROM players WHERE discordid = ?", (str(ctx.author.id),)
+            "SELECT playername, in_queue FROM players WHERE discordid = ?", 
+            (str(ctx.author.id),)
         )
         player_data = c.fetchone()
 
@@ -643,7 +644,30 @@ def setup(bot):
             await ctx.send("❌ Вы не зарегистрированы в системе")
             return
 
-        if player_data[0] == 1:
+        nickname, in_queue = player_data
+
+        # +++ ПРОВЕРКА АКТИВНЫХ МАТЧЕЙ +++
+        c_matches = matches_db.cursor()
+        c_matches.execute(
+            """
+            SELECT matchid 
+            FROM matches 
+            WHERE (player1 = ? OR player2 = ?) 
+            AND isover = 0
+            """,
+            (nickname, nickname),
+        )
+        active_match = c_matches.fetchone()
+        
+        if active_match:
+            await ctx.send(
+                f"❌ У вас есть активный матч (ID: {active_match[0]}). "
+                "Завершите его или сдайтесь командой !giveup перед поиском новой игры."
+            )
+            return
+        # --- КОНЕЦ ПРОВЕРКИ АКТИВНЫХ МАТЧЕЙ ---
+
+        if in_queue == 1:
             await ctx.send("❌ Вы уже в очереди")
             return
 
@@ -658,10 +682,6 @@ def setup(bot):
             return
 
         # Добавление в очередь
-        c.execute(
-            "SELECT playername FROM players WHERE discordid = ?", (str(ctx.author.id),)
-        )
-        nickname = c.fetchone()[0]
         rating = get_player_rating(nickname, view.selected_mode)
 
         queues[view.selected_mode].append(
