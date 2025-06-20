@@ -97,6 +97,11 @@ def init_matches_db():
         c.execute("ALTER TABLE matches ADD COLUMN map TEXT")
         print("Добавлена колонка 'map' в таблицу 'matches'")
 
+    # +++ ДОБАВЛЯЕМ ПРОВЕРКУ ДЛЯ НОВОГО ПОЛЯ +++
+    if "start_time" not in columns:
+        c.execute("ALTER TABLE matches ADD COLUMN start_time DATETIME")
+        print("Добавлена колонка 'start_time' в таблицу 'matches'")
+
     matches_db.commit()
     return matches_db
 

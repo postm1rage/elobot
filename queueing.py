@@ -4,6 +4,8 @@ from config import db, matches_db, MODES, MODE_NAMES, VERIFIED_ROLE_NAME, MAPS
 import asyncio
 import sqlite3
 from datetime import datetime
+from datetime import timedelta
+
 import random
 
 
@@ -15,6 +17,16 @@ queues = {mode: [] for mode in MODES.values()}
 map_voting = (
     {}
 )  # {match_id: {"players": [p1, p2], "remaining_maps": [...], "current_player": discord_id}}
+
+
+def get_discord_id_by_nickname(nickname):
+    c = db.cursor()
+    c.execute(
+        "SELECT discordid FROM players WHERE playername = ?",
+        (nickname,),
+    )
+    result = c.fetchone()
+    return int(result[0]) if result else None
 
 
 # Объявляем функцию send_map_selection перед использованием
@@ -379,10 +391,10 @@ async def find_match():
                     c = matches_db.cursor()
                     c.execute(
                         """
-                        INSERT INTO matches (mode, player1, player2)
-                        VALUES (?, ?, ?)
+                        INSERT INTO matches (mode, player1, player2, start_time)
+                        VALUES (?, ?, ?, ?)
                         """,
-                        (mode, player1["nickname"], player2["nickname"]),
+                        (mode, player1["nickname"], player2["nickname"], datetime.now()),
                     )
                     matches_db.commit()
                     match_id = c.lastrowid
@@ -466,10 +478,10 @@ async def find_match():
                 c = matches_db.cursor()
                 c.execute(
                     """
-                    INSERT INTO matches (mode, player1, player2)
-                    VALUES (?, ?, ?)
+                    INSERT INTO matches (mode, player1, player2, start_time)
+                    VALUES (?, ?, ?, ?)
                     """,
-                    (candidate_mode, player_any["nickname"], candidate["nickname"]),
+                    (mode, player1["nickname"], player2["nickname"], datetime.now()),
                 )
                 matches_db.commit()
                 match_id = c.lastrowid
@@ -552,10 +564,10 @@ async def find_match():
                         c = matches_db.cursor()
                         c.execute(
                             """
-                            INSERT INTO matches (mode, player1, player2)
-                            VALUES (?, ?, ?)
+                            INSERT INTO matches (mode, player1, player2, start_time)
+                            VALUES (?, ?, ?, ?)
                             """,
-                            (random_mode, player1["nickname"], player2["nickname"]),
+                            (mode, player1["nickname"], player2["nickname"], datetime.now()),
                         )
                         matches_db.commit()
                         match_id = c.lastrowid
@@ -761,6 +773,216 @@ def setup(bot):
         )
 
         await ctx.send(embed=embed)
+
+    @bot.command()
+    async def giveup(ctx):
+        # Проверяем, что команда вызвана в нужном канале или в ЛС боту
+        if not (
+            ctx.channel.name == "elobot-queue"
+            or isinstance(ctx.channel, discord.DMChannel)
+        ):
+            return
+
+        # Проверяем верификацию
+        if isinstance(ctx.channel, discord.TextChannel):
+            verified_role = discord.utils.get(ctx.guild.roles, name=VERIFIED_ROLE_NAME)
+            if not verified_role or verified_role not in ctx.author.roles:
+                await ctx.send(
+                    "❌ Требуется верификация для использования этой команды"
+                )
+                return
+
+        # Находим активный матч игрока
+        c = db.cursor()
+        c.execute(
+            "SELECT playername FROM players WHERE discordid = ?", (str(ctx.author.id),)
+        )
+        player_data = c.fetchone()
+
+        if not player_data:
+            await ctx.send("❌ Вы не зарегистрированы в системе")
+            return
+
+        nickname = player_data[0]
+
+        c = matches_db.cursor()
+        c.execute(
+            """
+            SELECT matchid, mode, player1, player2 
+            FROM matches 
+            WHERE (player1 = ? OR player2 = ?) 
+            AND isover = 0
+            """,
+            (nickname, nickname),
+        )
+        match_data = c.fetchone()
+
+        if not match_data:
+            await ctx.send("❌ У вас нет активных матчей")
+            return
+
+        match_id, mode, player1, player2 = match_data
+
+        # Определяем победителя и проигравшего
+        if nickname == player1:
+            winner = player2
+            loser = player1
+            player1_score = 0
+            player2_score = 1
+        else:
+            winner = player1
+            loser = player2
+            player1_score = 1
+            player2_score = 0
+
+        # Обновляем запись матча
+        c.execute(
+            """
+            UPDATE matches 
+            SET player1score = ?, player2score = ?, isover = 1, isverified = 1
+            WHERE matchid = ?
+            """,
+            (player1_score, player2_score, match_id),
+        )
+        matches_db.commit()
+
+        # Обновляем статистику игроков
+        c = db.cursor()
+        c.execute(
+            "UPDATE players SET wins = wins + 1 WHERE playername = ?",
+            (winner,),
+        )
+        c.execute(
+            "UPDATE players SET losses = losses + 1 WHERE playername = ?",
+            (loser,),
+        )
+
+        # Обновляем ELO
+        winner_rating = get_player_rating(winner, mode)
+        loser_rating = get_player_rating(loser, mode)
+        new_winner_rating, new_loser_rating = calculate_elo(
+            winner_rating, loser_rating, 1 if winner == player1 else 0
+        )
+
+        update_player_rating(winner, new_winner_rating, mode)
+        update_player_rating(loser, new_loser_rating, mode)
+
+        # Отправляем уведомление
+        mode_name = MODE_NAMES.get(mode, "Unknown")
+        embed = discord.Embed(
+            title="🏳️ Матч завершен (сдача)",
+            description=(
+                f"**Match ID:** {match_id}\n"
+                f"**Режим:** {mode_name}\n"
+                f"**Победитель:** {winner}\n"
+                f"**Проигравший:** {loser}\n\n"
+                f"**Изменения ELO:**\n"
+                f"{winner}: {winner_rating} → **{new_winner_rating}** (+{new_winner_rating - winner_rating})\n"
+                f"{loser}: {loser_rating} → **{new_loser_rating}** ({new_loser_rating - loser_rating})"
+            ),
+            color=discord.Color.red(),
+        )
+
+        try:
+            # Отправляем в ЛС обоим игрокам
+            winner_user = await global_bot.fetch_user(
+                get_discord_id_by_nickname(winner)
+            )
+            loser_user = await global_bot.fetch_user(get_discord_id_by_nickname(loser))
+
+            await winner_user.send(embed=embed)
+            await loser_user.send(embed=embed)
+        except Exception as e:
+            print(f"Ошибка при отправке уведомления о сдаче: {e}")
+
+        if isinstance(ctx.channel, discord.TextChannel):
+            await ctx.send("✅ Вы сдались. Матч завершен.")
+        else:
+            await ctx.send(
+                "✅ Вы сдались. Матч завершен. Результаты отправлены обоим игрокам."
+            )
+    @bot.event
+    async def on_ready():
+        bot.loop.create_task(check_expired_matches())
+
+    async def check_expired_matches():
+        await bot.wait_until_ready()
+        while not bot.is_closed():
+            await asyncio.sleep(300)  # Проверка каждые 5 минут
+            
+            now = datetime.now()
+            one_hour_ago = now - timedelta(hours=1)
+            
+            c = matches_db.cursor()
+            c.execute(
+                "SELECT matchid, mode, player1, player2 FROM matches WHERE isover = 0 AND start_time < ?",
+                (one_hour_ago,)
+            )
+            expired_matches = c.fetchall()
+            
+            for match in expired_matches:
+                match_id, mode, player1_name, player2_name = match
+                
+                # Двойная проверка статуса матча
+                c_check = matches_db.cursor()
+                c_check.execute("SELECT isover FROM matches WHERE matchid = ?", (match_id,))
+                if c_check.fetchone()[0] == 1:
+                    continue
+                    
+                # Обновляем матч как ничью
+                c_update = matches_db.cursor()
+                c_update.execute(
+                    "UPDATE matches SET player1score = 0, player2score = 0, isover = 1, isverified = 1 WHERE matchid = ?",
+                    (match_id,)
+                )
+                matches_db.commit()
+                
+                # Обновляем статистику игроков
+                rating1 = get_player_rating(player1_name, mode)
+                rating2 = get_player_rating(player2_name, mode)
+                new_rating1, new_rating2 = calculate_elo(rating1, rating2, 0.5)  # Ничья
+                
+                update_player_rating(player1_name, new_rating1, mode)
+                update_player_rating(player2_name, new_rating2, mode)
+                
+                # Обновляем счетчики ничьих
+                c_db = db.cursor()
+                if mode == MODES["station5f"]:
+                    c_db.execute("UPDATE players SET ties_station5f = ties_station5f + 1 WHERE playername = ?", (player1_name,))
+                    c_db.execute("UPDATE players SET ties_station5f = ties_station5f + 1 WHERE playername = ?", (player2_name,))
+                elif mode == MODES["mots"]:
+                    c_db.execute("UPDATE players SET ties_mots = ties_mots + 1 WHERE playername = ?", (player1_name,))
+                    c_db.execute("UPDATE players SET ties_mots = ties_mots + 1 WHERE playername = ?", (player2_name,))
+                elif mode == MODES["12min"]:
+                    c_db.execute("UPDATE players SET ties_12min = ties_12min + 1 WHERE playername = ?", (player1_name,))
+                    c_db.execute("UPDATE players SET ties_12min = ties_12min + 1 WHERE playername = ?", (player2_name,))
+                
+                c_db.execute("UPDATE players SET ties = ties + 1 WHERE playername IN (?, ?)", (player1_name, player2_name))
+                db.commit()
+                
+                # Уведомление игроков
+                try:
+                    user1_id = get_discord_id_by_nickname(player1_name)
+                    user2_id = get_discord_id_by_nickname(player2_name)
+                    user1 = await global_bot.fetch_user(user1_id)
+                    user2 = await global_bot.fetch_user(user2_id)
+                    
+                    embed = discord.Embed(
+                        title="⏱ Матч завершен автоматически",
+                        description=(
+                            f"Матч #{match_id} между **{player1_name}** и **{player2_name}**\n"
+                            f"Режим: **{MODE_NAMES.get(mode, 'Unknown')}**\n"
+                            f"Был автоматически завершен вничью, так как превышено время (1 час).\n\n"
+                            f"**Изменения ELO:**\n"
+                            f"{player1_name}: {rating1} → **{new_rating1}** ({new_rating1 - rating1:+})\n"
+                            f"{player2_name}: {rating2} → **{new_rating2}** ({new_rating2 - rating2:+})"
+                        ),
+                        color=discord.Color.orange()
+                    )
+                    await user1.send(embed=embed)
+                    await user2.send(embed=embed)
+                except Exception as e:
+                    print(f"Ошибка при отправке уведомления: {e}")
 
 
 class ConfirmMatchView(View):
