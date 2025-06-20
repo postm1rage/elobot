@@ -883,6 +883,56 @@ def setup(bot):
             color=discord.Color.red(),
         )
 
+        embed_channel = discord.Embed( ## embed для отправки в канал результатов
+        title="🏳️ Матч завершен (сдача)",
+        description=(
+            f"**Match ID:** {match_id}\n"
+            f"**Режим:** {mode_name}\n"
+            f"**Победитель:** {winner}\n"
+            f"**Проигравший:** {loser}\n\n"
+            f"**Изменения ELO:**\n"
+            f"{winner}: {winner_rating} → **{new_winner_rating}** (+{new_winner_rating - winner_rating})\n"
+            f"{loser}: {loser_rating} → **{new_loser_rating}** ({new_loser_rating - loser_rating})"
+        ),
+        color=discord.Color.red(),
+    )
+        
+        # +++ ДОБАВЛЯЕМ ОТПРАВКУ В КАНАЛ РЕЗУЛЬТАТОВ +++
+        # Ищем канал elobot-results
+        results_channel_found = None
+        for guild in global_bot.guilds:
+            results_channel = discord.utils.get(guild.text_channels, name="elobot-results")
+            if results_channel:
+                results_channel_found = results_channel
+                break
+        
+        if results_channel_found:
+            try:
+                await results_channel_found.send(embed=embed_channel)
+            except Exception as e:
+                print(f"Ошибка при отправке в канал результатов: {e}")
+                # Пытаемся отправить в канал очереди как запасной вариант
+                try:
+                    if isinstance(ctx.channel, discord.TextChannel):
+                        await ctx.send(f"⚠ Не удалось отправить в канал результатов: {e}")
+                except:
+                    pass
+        else:
+            print("Канал elobot-results не найден ни на одном сервере")
+            try:
+                if isinstance(ctx.channel, discord.TextChannel):
+                    await ctx.send("⚠ Канал elobot-results не найден")
+            except:
+                pass
+
+        if isinstance(ctx.channel, discord.TextChannel):
+            await ctx.send("✅ Вы сдались. Матч завершен.")
+        else:
+            await ctx.send(
+                "✅ Вы сдались. Матч завершен. Результаты отправлены обоим игрокам."
+            )
+
+
         try:
             # Отправляем в ЛС обоим игрокам
             winner_user = await global_bot.fetch_user(
@@ -901,6 +951,8 @@ def setup(bot):
             await ctx.send(
                 "✅ Вы сдались. Матч завершен. Результаты отправлены обоим игрокам."
             )
+
+        
     @bot.event
     async def on_ready():
         bot.loop.create_task(check_expired_matches())
