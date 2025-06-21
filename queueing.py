@@ -595,19 +595,7 @@ async def create_match(mode, player1, player2):
                 )
             except Exception as e:
                 print(f"Ошибка при отправке сообщения игроку 2: {e}")
-
-            # И напоминание о результате для обоих игроков
-            try:
-                user1 = await global_bot.fetch_user(player1["discord_id"])
-                await user1.send(RESULT_REMINDER)
-            except:
-                pass
-
-            try:
-                user2 = await global_bot.fetch_user(player2["discord_id"])
-                await user2.send(RESULT_REMINDER)
-            except:
-                pass
+            pass
     except Exception as e:
         print(f"Error creating match: {e}")
 
@@ -680,11 +668,7 @@ def setup(bot):
                     )
 
                     # Отправляем напоминание о результате
-                    await message.channel.send(RESULT_REMINDER)
-                    try:
-                        await user2.send(RESULT_REMINDER)
-                    except:
-                        pass
+                    pass
                 except Exception as e:
                     await message.channel.send(
                         "❌ Не удалось отправить ссылку противнику. Обратитесь к администратору."
@@ -1238,43 +1222,55 @@ def setup(bot):
                         user1_id = get_discord_id_by_nickname(player1_name)
                         user2_id = get_discord_id_by_nickname(player2_name)
 
+                        # Создаем embed один раз
+                        embed_dm = discord.Embed(
+                            title="⏱ Матч завершен автоматически",
+                            description=(
+                                f"Матч #{match_id} между **{player1_name}** и **{player2_name}**\n"
+                                f"Режим: **{MODE_NAMES.get(mode, 'Unknown')}**\n"
+                                f"Был автоматически завершен вничью, так как превышено время (1 час).\n\n"
+                                f"**Изменения ELO:**\n"
+                                f"{player1_name}: {rating1} → **{new_rating1}** ({new_rating1 - rating1:+})\n"
+                                f"{player2_name}: {rating2} → **{new_rating2}** ({new_rating2 - rating2:+})"
+                            ),
+                            color=discord.Color.orange(),
+                        )
+
+                        # Отправляем уведомление игрокам
                         if user1_id:
                             user1 = await global_bot.fetch_user(user1_id)
-                            embed_dm = discord.Embed(
-                                title="⏱ Матч завершен автоматически",
-                                description=(
-                                    f"Матч #{match_id} между **{player1_name}** и **{player2_name}**\n"
-                                    f"Режим: **{MODE_NAMES.get(mode, 'Unknown')}**\n"
-                                    f"Был автоматически завершен вничью, так как превышено время (1 час).\n\n"
-                                    f"**Изменения ELO:**\n"
-                                    f"{player1_name}: {rating1} → **{new_rating1}** ({new_rating1 - rating1:+})\n"
-                                    f"{player2_name}: {rating2} → **{new_rating2}** ({new_rating2 - rating2:+})"
-                                ),
-                                color=discord.Color.orange(),
-                            )
                             await user1.send(embed=embed_dm)
-                            # Напоминание о результате
-                            await user1.send(RESULT_REMINDER)
                             print(f"Уведомление отправлено {player1_name} ({user1_id})")
 
                         if user2_id:
                             user2 = await global_bot.fetch_user(user2_id)
-                            embed_dm = discord.Embed(
-                                title="⏱ Матч завершен автоматически",
-                                description=(
-                                    f"Матч #{match_id} между **{player1_name}** и **{player2_name}**\n"
-                                    f"Режим: **{MODE_NAMES.get(mode, 'Unknown')}**\n"
-                                    f"Был автоматически завершен вничью, так как превышено время (1 час).\n\n"
-                                    f"**Изменения ELO:**\n"
-                                    f"{player1_name}: {rating1} → **{new_rating1}** ({new_rating1 - rating1:+})\n"
-                                    f"{player2_name}: {rating2} → **{new_rating2}** ({new_rating2 - rating2:+})"
-                                ),
-                                color=discord.Color.orange(),
-                            )
                             await user2.send(embed=embed_dm)
-                            # Напоминание о результате
-                            await user2.send(RESULT_REMINDER)
                             print(f"Уведомление отправлено {player2_name} ({user2_id})")
+
+                        # Отправляем ОДНО напоминание о результате (в общий чат матча)
+                        # Находим канал, где был создан матч
+                        try:
+                            # Получаем информацию о канале из первого игрока в очереди
+                            for queue in queues.values():
+                                for player in queue:
+                                    if player["nickname"] in [
+                                        player1_name,
+                                        player2_name,
+                                    ]:
+                                        channel_id = player["channel_id"]
+                                        channel = global_bot.get_channel(channel_id)
+                                        if channel:
+                                            await channel.send(RESULT_REMINDER)
+                                            print(
+                                                f"Напоминание отправлено в канал #{channel.name}"
+                                            )
+                                            break
+                                else:
+                                    continue
+                                break
+                        except Exception as e:
+                            print(f"Ошибка при отправке напоминания в канал: {e}")
+
                     except Exception as e:
                         print(f"Ошибка при отправке уведомления игрокам: {e}")
 
