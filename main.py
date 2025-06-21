@@ -209,103 +209,8 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    if message.channel.name == VERIFY_CHANNEL_NAME:
-        if not message.content.strip():
-            await message.delete()
-            return
-
-        try:
-            # Проверка 1: Наличие скриншота
-            if not message.attachments:
-                results_channel = discord.utils.get(
-                    message.guild.text_channels, name=RESULTS_CHANNEL_NAME
-                )
-                if results_channel:
-                    embed = discord.Embed(
-                        title="❌ Верификация отклонена (автоматически)",
-                        description=(
-                            f"Игрок {message.author.mention}\n"
-                            f"Причина: Отсутствует скриншот\n"
-                            f"Никнейм: {message.content}"
-                        ),
-                        color=discord.Color.red(),
-                    )
-                    await results_channel.send(embed=embed)
-                await message.delete()
-                return
-
-            # Проверка 2: Существующий Discord ID
-            c = db.cursor()
-            c.execute(
-                "SELECT 1 FROM players WHERE discordid = ?", (str(message.author.id),)
-            )
-            if c.fetchone():
-                results_channel = discord.utils.get(
-                    message.guild.text_channels, name=RESULTS_CHANNEL_NAME
-                )
-                if results_channel:
-                    embed = discord.Embed(
-                        title="❌ Верификация отклонена (автоматически)",
-                        description=(
-                            f"Игрок {message.author.mention}\n"
-                            f"Причина: Discord ID уже зарегистрирован\n"
-                            f"Никнейм: {message.content}"
-                        ),
-                        color=discord.Color.red(),
-                    )
-                    await results_channel.send(embed=embed)
-                await message.delete()
-                return
-
-            # Проверка 3: Существующее имя игрока
-            c.execute(
-                "SELECT 1 FROM players WHERE playername = ?", (message.content.strip(),)
-            )
-            if c.fetchone():
-                results_channel = discord.utils.get(
-                    message.guild.text_channels, name=RESULTS_CHANNEL_NAME
-                )
-                if results_channel:
-                    embed = discord.Embed(
-                        title="❌ Верификация отклонена (автоматически)",
-                        description=(
-                            f"Игрок {message.author.mention}\n"
-                            f"Причина: Никнейм уже занят\n"
-                            f"Никнейм: {message.content}"
-                        ),
-                        color=discord.Color.red(),
-                    )
-                    await results_channel.send(embed=embed)
-                await message.delete()
-                return
-
-            # Если все проверки пройдены - отправляем модератору
-            moderator = await bot.fetch_user(MODERATOR_ID)
-            embed = discord.Embed(
-                title="Новая заявка на верификацию",
-                description=f"**Никнейм:** {message.content}\n**Отправитель:** {message.author.mention}",
-                color=discord.Color.blue(),
-            )
-            embed.set_footer(text=f"ID: {message.id}")
-
-            files = [await attachment.to_file() for attachment in message.attachments]
-            view = VerifyView(message.id, message.guild.id, message.content.strip())
-
-            await moderator.send(embed=embed, files=files, view=view)
-        except Exception as e:
-            print(f"Ошибка при обработке верификации: {e}")
-            try:
-                results_channel = discord.utils.get(
-                    message.guild.text_channels, name=RESULTS_CHANNEL_NAME
-                )
-                if results_channel:
-                    await results_channel.send(
-                        f"⚠️ Ошибка при обработке верификации: {str(e)}"
-                    )
-            except:
-                pass
-        finally:
-            return
+    # Добавим логгирование для диагностики
+    print(f"Получено сообщение в #{message.channel.name}: {message.content[:20]}...")
 
     # Обработка результатов матча
     if message.channel.name == "elobot-results" and message.attachments:
@@ -506,7 +411,7 @@ async def on_disconnect():
 
 
 # Настройка модулей
-setup_verification(bot)
 setup_queueing(bot)
+setup_verification(bot)
 
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)

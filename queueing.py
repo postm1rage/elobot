@@ -25,6 +25,7 @@ RESULT_REMINDER = (
 # Глобальный словарь для хранения репортов
 pending_reports = {}
 
+
 class ReportView(View):
     def __init__(self, match_id, reporter_name, violator_name):
         super().__init__(timeout=None)
@@ -33,22 +34,27 @@ class ReportView(View):
         self.violator_name = violator_name
 
     @discord.ui.button(label="Принять", style=discord.ButtonStyle.danger)
-    async def accept_report(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def accept_report(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
         # Получаем данные матча
         c = matches_db.cursor()
-        c.execute("""
+        c.execute(
+            """
             SELECT mode, player1, player2, isverified, player1score, player2score 
             FROM matches 
             WHERE matchid = ?
-        """, (self.match_id,))
+        """,
+            (self.match_id,),
+        )
         match_data = c.fetchone()
-        
+
         if not match_data:
             await interaction.response.send_message("❌ Матч не найден", ephemeral=True)
             return
-            
+
         mode, player1, player2, isverified, p1_score, p2_score = match_data
-        
+
         # Если результат уже был подтвержден - отменяем его
         if isverified == 1:
             # Определяем предыдущих победителя и проигравшего
@@ -58,21 +64,26 @@ class ReportView(View):
             else:
                 winner_old = player2
                 loser_old = player1
-            
+
             # Откатываем статистику
             c_db = db.cursor()
-            c_db.execute("UPDATE players SET wins = wins - 1 WHERE playername = ?", (winner_old,))
-            c_db.execute("UPDATE players SET losses = losses - 1 WHERE playername = ?", (loser_old,))
+            c_db.execute(
+                "UPDATE players SET wins = wins - 1 WHERE playername = ?", (winner_old,)
+            )
+            c_db.execute(
+                "UPDATE players SET losses = losses - 1 WHERE playername = ?",
+                (loser_old,),
+            )
             db.commit()
-            
+
             # Откатываем ELO (сохраняем для отчета)
             old_winner_rating = get_player_rating(winner_old, mode)
             old_loser_rating = get_player_rating(loser_old, mode)
-        
+
         # Применяем техническое поражение
         winner = self.reporter_name
         loser = self.violator_name
-        
+
         # Определяем счет
         if player1 == winner:
             new_p1_score = 1
@@ -80,50 +91,61 @@ class ReportView(View):
         else:
             new_p1_score = 0
             new_p2_score = 1
-        
+
         # Получаем текущие рейтинги для отчета
         winner_rating = get_player_rating(winner, mode)
         loser_rating = get_player_rating(loser, mode)
-        
+
         # Рассчитываем новые рейтинги
-        new_winner_rating, new_loser_rating = calculate_elo(winner_rating, loser_rating, 1)
-        
+        new_winner_rating, new_loser_rating = calculate_elo(
+            winner_rating, loser_rating, 1
+        )
+
         # Обновляем статистику
         c_db = db.cursor()
-        c_db.execute("UPDATE players SET wins = wins + 1 WHERE playername = ?", (winner,))
-        c_db.execute("UPDATE players SET losses = losses + 1 WHERE playername = ?", (loser,))
+        c_db.execute(
+            "UPDATE players SET wins = wins + 1 WHERE playername = ?", (winner,)
+        )
+        c_db.execute(
+            "UPDATE players SET losses = losses + 1 WHERE playername = ?", (loser,)
+        )
         db.commit()
-        
+
         # Обновляем ELO
         update_player_rating(winner, new_winner_rating, mode)
         update_player_rating(loser, new_loser_rating, mode)
-        
+
         # Обновляем матч
-        c.execute("""
+        c.execute(
+            """
             UPDATE matches 
             SET player1score = ?, player2score = ?, isover = 1, isverified = 1 
             WHERE matchid = ?
-        """, (new_p1_score, new_p2_score, self.match_id))
+        """,
+            (new_p1_score, new_p2_score, self.match_id),
+        )
         matches_db.commit()
-        
+
         # Отправляем результат в канал
         moderator_name = f"{interaction.user.name}#{interaction.user.discriminator}"
         await self.send_report_result(
             mode,
-            winner, 
+            winner,
             loser,
             winner_rating,  # старый рейтинг победителя
-            loser_rating,   # старый рейтинг проигравшего
+            loser_rating,  # старый рейтинг проигравшего
             new_winner_rating,
             new_loser_rating,
-            moderator_name
+            moderator_name,
         )
-        
+
         # Уведомляем игроков
         try:
             # Получаем discord_id игроков
             c_db = db.cursor()
-            c_db.execute("SELECT discordid FROM players WHERE playername = ?", (winner,))
+            c_db.execute(
+                "SELECT discordid FROM players WHERE playername = ?", (winner,)
+            )
             winner_row = c_db.fetchone()
             if winner_row:
                 winner_id = int(winner_row[0])
@@ -132,7 +154,7 @@ class ReportView(View):
                     f"✅ Ваш репорт на матч #{self.match_id} принят. "
                     f"Противнику назначено техническое поражение."
                 )
-            
+
             c_db.execute("SELECT discordid FROM players WHERE playername = ?", (loser,))
             loser_row = c_db.fetchone()
             if loser_row:
@@ -144,46 +166,61 @@ class ReportView(View):
                 )
         except Exception as e:
             print(f"Ошибка уведомления игроков: {e}")
-        
+
         # Удаляем репорт из ожидания
         if self.match_id in pending_reports:
             del pending_reports[self.match_id]
-            
-        await interaction.response.send_message("✅ Репорт принят. Техническое поражение применено.", ephemeral=True)
+
+        await interaction.response.send_message(
+            "✅ Репорт принят. Техническое поражение применено.", ephemeral=True
+        )
         await interaction.message.edit(view=None)
 
     @discord.ui.button(label="Отклонить", style=discord.ButtonStyle.secondary)
-    async def reject_report(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def reject_report(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
         # Возвращаем матч в предыдущее состояние
         c = matches_db.cursor()
         c.execute("UPDATE matches SET isover = 0 WHERE matchid = ?", (self.match_id,))
         matches_db.commit()
-        
+
         # Уведомляем репортера
         try:
             reporter_id = pending_reports[self.match_id]["reporter_id"]
             reporter_user = await global_bot.fetch_user(reporter_id)
-            await reporter_user.send(f"❌ Ваш репорт на матч #{self.match_id} отклонен.")
+            await reporter_user.send(
+                f"❌ Ваш репорт на матч #{self.match_id} отклонен."
+            )
         except:
             pass
-            
+
         # Удаляем репорт из ожидания
         if self.match_id in pending_reports:
             del pending_reports[self.match_id]
-            
+
         await interaction.response.send_message("❌ Репорт отклонен.", ephemeral=True)
         await interaction.message.edit(view=None)
 
-    async def send_report_result(self, mode, winner, loser, old_winner_rating, old_loser_rating, 
-                                new_winner_rating, new_loser_rating, moderator_name):
+    async def send_report_result(
+        self,
+        mode,
+        winner,
+        loser,
+        old_winner_rating,
+        old_loser_rating,
+        new_winner_rating,
+        new_loser_rating,
+        moderator_name,
+    ):
         """Отправляет результат репорта в канал результатов"""
         try:
             mode_name = MODE_NAMES.get(mode, "Unknown")
-            
+
             # Рассчитываем изменения ELO
             winner_change = new_winner_rating - old_winner_rating
             loser_change = new_loser_rating - old_loser_rating
-            
+
             # Создаем embed
             embed = discord.Embed(
                 title="⚠️ Матч завершен (техническое поражение)",
@@ -198,10 +235,10 @@ class ReportView(View):
                     f"{winner}: {old_winner_rating} → **{new_winner_rating}** ({winner_change:+})\n"
                     f"{loser}: {old_loser_rating} → **{new_loser_rating}** ({loser_change:+})"
                 ),
-                color=discord.Color.red()
+                color=discord.Color.red(),
             )
             embed.set_footer(text=f"Техническое поражение по репорту")
-            
+
             # Ищем канал результатов
             results_channel = None
             for guild in global_bot.guilds:
@@ -209,13 +246,14 @@ class ReportView(View):
                 if channel:
                     results_channel = channel
                     break
-            
+
             if results_channel:
                 await results_channel.send(embed=embed)
             else:
                 print("⚠ Канал elobot-results не найден")
         except Exception as e:
             print(f"Ошибка отправки результата репорта: {e}")
+
 
 global_bot = None
 # Очереди для каждого режима
@@ -596,7 +634,7 @@ def update_player_rating(nickname, new_rating, mode):
 async def find_match():
     global global_bot
     while True:
-        await asyncio.sleep(5)
+        await asyncio.sleep(30)
         print(f"Checking queues: {[len(q) for q in queues.values()]}")
 
         # Обработка стандартных режимов (1, 2, 3)
@@ -1058,9 +1096,11 @@ def setup(bot):
                 "❌ Эта команда доступна только в личных сообщениях с ботом."
             )
             return
-        
+
         if match_id in pending_reports:
-            await ctx.send("❌ Нельзя отправить результат: по этому матчу есть активный репорт.")
+            await ctx.send(
+                "❌ Нельзя отправить результат: по этому матчу есть активный репорт."
+            )
             return
 
         # Проверяем формат счета
@@ -1521,31 +1561,36 @@ def setup(bot):
     async def report(ctx, match_id: int, *, reason: str):
         """Отправка репорта на матч"""
         # Проверяем, что команда вызвана в ЛС или канале очереди
-        if not isinstance(ctx.channel, discord.DMChannel) and ctx.channel.name != "elobot-queue":
+        if (
+            not isinstance(ctx.channel, discord.DMChannel)
+            and ctx.channel.name != "elobot-queue"
+        ):
             return
 
         # Проверяем существование матча
         c = matches_db.cursor()
         c.execute("SELECT player1, player2 FROM matches WHERE matchid = ?", (match_id,))
         match_data = c.fetchone()
-        
+
         if not match_data:
             await ctx.send("❌ Матч с указанным ID не найден.")
             return
-            
+
         player1, player2 = match_data
 
         # Проверяем, что игрок участвует в матче
         c_db = db.cursor()
-        c_db.execute("SELECT playername FROM players WHERE discordid = ?", (str(ctx.author.id),))
+        c_db.execute(
+            "SELECT playername FROM players WHERE discordid = ?", (str(ctx.author.id),)
+        )
         player_data = c_db.fetchone()
-        
+
         if not player_data:
             await ctx.send("❌ Вы не зарегистрированы в системе")
             return
-            
+
         reporter_name = player_data[0]
-        
+
         if reporter_name not in [player1, player2]:
             await ctx.send("❌ Вы не участвуете в этом матче.")
             return
@@ -1556,7 +1601,7 @@ def setup(bot):
         # Помечаем матч как завершенный (но не проверенный)
         c.execute("UPDATE matches SET isover = 1 WHERE matchid = ?", (match_id,))
         matches_db.commit()
-        
+
         # Сохраняем скриншот если есть
         screenshot_url = None
         if ctx.message.attachments:
@@ -1568,13 +1613,13 @@ def setup(bot):
             "reporter_name": reporter_name,
             "violator_name": violator_name,
             "reason": reason,
-            "screenshot": screenshot_url
+            "screenshot": screenshot_url,
         }
 
         # Отправляем модератору
         try:
             moderator = await global_bot.fetch_user(MODERATOR_ID)
-            
+
             embed = discord.Embed(
                 title="⚠️ Новый репорт",
                 description=(
@@ -1583,19 +1628,23 @@ def setup(bot):
                     f"**Нарушитель:** {violator_name}\n"
                     f"**Причина:** {reason}"
                 ),
-                color=discord.Color.orange()
+                color=discord.Color.orange(),
             )
-            
+
             if screenshot_url:
                 embed.set_image(url=screenshot_url)
-                
+
             view = ReportView(match_id, reporter_name, violator_name)
             await moderator.send(embed=embed, view=view)
-            
-            await ctx.send("✅ Репорт отправлен на рассмотрение. Матч временно заморожен.")
+
+            await ctx.send(
+                "✅ Репорт отправлен на рассмотрение. Матч временно заморожен."
+            )
         except Exception as e:
             print(f"Ошибка при отправке репорта: {e}")
-            await ctx.send("❌ Не удалось отправить репорт. Обратитесь к администратору.")
+            await ctx.send(
+                "❌ Не удалось отправить репорт. Обратитесь к администратору."
+            )
 
 
 class ConfirmMatchView(View):
