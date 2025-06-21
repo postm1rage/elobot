@@ -937,13 +937,11 @@ def setup(bot):
         ):
             return
 
-        # Проверяем верификацию
+        # Проверка верификации только в текстовых каналах
         if isinstance(ctx.channel, discord.TextChannel):
             verified_role = discord.utils.get(ctx.guild.roles, name=VERIFIED_ROLE_NAME)
             if not verified_role or verified_role not in ctx.author.roles:
-                await ctx.send(
-                    "❌ Требуется верификация для использования этой команды"
-                )
+                await ctx.send("❌ Требуется верификация для использования этой команды")
                 return
 
         # Находим активный матч игрока
@@ -1101,13 +1099,6 @@ def setup(bot):
             await loser_user.send(embed=embed)
         except Exception as e:
             print(f"Ошибка при отправке уведомления о сдаче: {e}")
-
-        if isinstance(ctx.channel, discord.TextChannel):
-            await ctx.send("✅ Вы сдались. Матч завершен.")
-        else:
-            await ctx.send(
-                "✅ Вы сдались. Матч завершен. Результаты отправлены обоим игрокам."
-            )
 
     @bot.event
     async def on_ready():
