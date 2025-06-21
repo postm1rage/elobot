@@ -931,9 +931,9 @@ def setup(bot):
     @bot.command()
     async def giveup(ctx):
         # Проверяем, что команда вызвана в нужном канале или в ЛС боту
-        if not (
-            ctx.channel.name == "elobot-queue"
-            or isinstance(ctx.channel, discord.DMChannel)
+        if (
+            not isinstance(ctx.channel, discord.DMChannel)
+            and ctx.channel.name != "elobot-queue"
         ):
             return
 
@@ -941,7 +941,9 @@ def setup(bot):
         if isinstance(ctx.channel, discord.TextChannel):
             verified_role = discord.utils.get(ctx.guild.roles, name=VERIFIED_ROLE_NAME)
             if not verified_role or verified_role not in ctx.author.roles:
-                await ctx.send("❌ Требуется верификация для использования этой команды")
+                await ctx.send(
+                    "❌ Требуется верификация для использования этой команды"
+                )
                 return
 
         # Находим активный матч игрока
