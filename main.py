@@ -11,7 +11,6 @@ from config import (
     VERIFY_CHANNEL_NAME,
     RESULTS_CHANNEL_NAME,
     MODERATOR_ID,
-    MODE_NAMES,
     LEADERBOARD_MODES,
     MODES,
 )
@@ -21,6 +20,7 @@ from verification import (
     VerifyView,
 )  # Добавлен VerifyView
 from queueing import setup as setup_queueing, ConfirmMatchView, find_match
+from queueing import check_expired_matches
 import re
 from discord.ui import View, Button, Select
 import discord
@@ -36,11 +36,11 @@ handler = logging.FileHandler(filename="discord.log", encoding="utf-8", mode="w"
 async def on_ready():
     print(f"Бот {bot.user.name} запущен!")
 
+    # Создаем фоновую задачу
+    bot.loop.create_task(check_expired_matches(bot))
+
     # Проверяем и создаём необходимые роли/каналы
     for guild in bot.guilds:
-        # Создаём роль verified
-        await setup_verified_role(guild)
-
         queue_channel = discord.utils.get(guild.text_channels, name="elobot-queue")
         results_channel = discord.utils.get(guild.text_channels, name="elobot-results")
 
@@ -212,7 +212,7 @@ async def on_message(message):
     # Добавим логгирование для диагностики
     print(f"Получено сообщение в #{message.channel.name}: {message.content[:20]}...")
 
-    # Обработка результатов матча
+    # Обработка результатов матча ТОЛЬКО в канале elobot-results
     if message.channel.name == "elobot-results" and message.attachments:
         # Парсим счет
         score_match = re.search(r"(\d+)\s*-\s*(\d+)", message.content)
@@ -222,6 +222,18 @@ async def on_message(message):
         score1 = int(score_match.group(1))
         score2 = int(score_match.group(2))
 
+        # Проверяем равенство счета
+        if score1 == score2:
+            await message.channel.send(
+                "❌ Счет не может быть равным! Матч должен иметь победителя."
+            )
+            return
+
+        # Определяем победителя
+        winner_score = max(score1, score2)
+        loser_score = min(score1, score2)
+        is_player1_winner = score1 > score2
+
         # Ищем активный матч игрока
         c = db.cursor()
         c.execute(
@@ -230,6 +242,7 @@ async def on_message(message):
         )
         player_data = c.fetchone()
         if not player_data:
+            await message.channel.send("❌ Вы не зарегистрированы в системе")
             return
 
         nickname = player_data[0]
@@ -251,6 +264,18 @@ async def on_message(message):
             return
 
         match_id, player1, player2, mode = match_data
+
+        # Проверяем, что сообщение отправил победитель
+        if is_player1_winner and nickname != player1:
+            await message.channel.send(
+                f"❌ Результат должен отправлять победитель ({player1})!"
+            )
+            return
+        elif not is_player1_winner and nickname != player2:
+            await message.channel.send(
+                f"❌ Результат должен отправлять победитель ({player2})!"
+            )
+            return
 
         # Определяем порядок счета
         if nickname == player1:
@@ -384,7 +409,7 @@ async def on_message(message):
             color=discord.Color.orange(),
         )
 
-        view = ConfirmMatchView(match_id, bot)
+        view = ConfirmMatchView(match_id, bot, message.id)
 
         await moderator.send(
             embed=embed,
@@ -399,6 +424,7 @@ async def on_message(message):
             print(f"Ошибка при удалении сообщения: {e}")
         return
 
+    # Всегда обрабатываем команды после нашей кастомной логики
     await bot.process_commands(message)
 
 

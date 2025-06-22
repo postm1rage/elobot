@@ -1,6 +1,15 @@
 import discord
-from config import db, bot, VERIFY_CHANNEL_NAME, RESULTS_CHANNEL_NAME, MODERATOR_ID, VERIFIED_ROLE_NAME, DEFAULT_ELO
+from config import (
+    db,
+    bot,
+    VERIFY_CHANNEL_NAME,
+    RESULTS_CHANNEL_NAME,
+    MODERATOR_ID,
+    VERIFIED_ROLE_NAME,
+    DEFAULT_ELO,
+)
 import sqlite3
+
 
 class VerifyView(discord.ui.View):
     def __init__(self, verify_message_id, guild_id, player_nickname):
@@ -15,10 +24,20 @@ class VerifyView(discord.ui.View):
         try:
             c.execute(
                 """
-            INSERT INTO players (playername, discordid)
-            VALUES (?, ?)
+            INSERT INTO players (playername, discordid, currentelo, 
+                                elo_station5f, elo_mots, elo_12min,
+                                wins, losses, ties, wins_station5f, 
+                                losses_station5f, ties_station5f,
+                                wins_mots, losses_mots, ties_mots,
+                                wins_12min, losses_12min, ties_12min)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-                (self.player_nickname, str(discord_user.id)),
+                (
+                    self.player_nickname, 
+                    str(discord_user.id),
+                    DEFAULT_ELO, DEFAULT_ELO, DEFAULT_ELO, DEFAULT_ELO,  # ELO значения
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  # Статистика
+                ),
             )
             db.commit()
             return True
@@ -41,15 +60,14 @@ class VerifyView(discord.ui.View):
 
         try:
             if success:
-                # Добавляем игрока в базу данных
-                db_success = await self.add_player_to_db(user_to_verify)
-                if not db_success:
-                    raise Exception("Не удалось добавить игрока в базу данных")
-
-                # Выдаём роль verified
+                # ВЫДАЧА РОЛИ ТОЛЬКО НА ТЕКУЩЕМ СЕРВЕРЕ (ОПЦИОНАЛЬНО)
                 verified_role = discord.utils.get(guild.roles, name=VERIFIED_ROLE_NAME)
                 if verified_role:
-                    await user_to_verify.add_roles(verified_role)
+                    try:
+                        await user_to_verify.add_roles(verified_role)
+                        print(f"Роль выдана на сервере {guild.name}")
+                    except Exception as e:
+                        print(f"Ошибка выдачи роли на {guild.name}: {e}")
 
                 embed = discord.Embed(
                     title="✅ Верификация пройдена",
@@ -69,11 +87,7 @@ class VerifyView(discord.ui.View):
 
             await results_channel.send(embed=embed)
         except Exception as e:
-            print(f"Ошибка: {e}")
-            try:
-                await guild.owner.send(f"⚠️ Ошибка при верификации: {str(e)}")
-            except:
-                pass
+            print(f"Ошибка при верификации: {e}")
 
     @discord.ui.button(label="Верифицировать", style=discord.ButtonStyle.green)
     async def verify_accept(
@@ -92,6 +106,13 @@ class VerifyView(discord.ui.View):
             )
             verify_message = await verify_channel.fetch_message(self.verify_message_id)
             user_to_verify = verify_message.author
+
+            # ДОБАВЛЕНО: Добавляем игрока в базу данных
+            if not await self.add_player_to_db(user_to_verify):
+                await interaction.response.send_message(
+                    "❌ Ошибка добавления в базу данных", ephemeral=True
+                )
+                return
 
             await self.send_result(guild, user_to_verify, success=True)
             await interaction.message.edit(
@@ -134,11 +155,15 @@ class VerifyView(discord.ui.View):
                 f"❌ Ошибка: {str(e)}", ephemeral=True
             )
 
+
 async def setup_verified_role(guild):
-    """Создаёт роль verified если её нет"""
-    if not discord.utils.get(guild.roles, name=VERIFIED_ROLE_NAME):
+    """Создаёт роль verified если её нет и добавляет всех верифицированных игроков"""
+    verified_role = discord.utils.get(guild.roles, name=VERIFIED_ROLE_NAME)
+
+    # Создаем роль если её нет
+    if not verified_role:
         try:
-            await guild.create_role(
+            verified_role = await guild.create_role(
                 name=VERIFIED_ROLE_NAME,
                 color=discord.Color.default(),
                 reason="Автоматическое создание роли для верификации",
@@ -146,11 +171,42 @@ async def setup_verified_role(guild):
             print(f"Создана роль '{VERIFIED_ROLE_NAME}' на сервере '{guild.name}'")
         except discord.Forbidden:
             print(f"⚠️ Нет прав для создания роли на сервере '{guild.name}'")
+    return verified_role
+
+    # Добавляем всех верифицированных игроков
+    try:
+        c = db.cursor()
+        c.execute("SELECT discordid FROM players")
+        verified_users = [row[0] for row in c.fetchall()]
+
+        added_count = 0
+        for user_id in verified_users:
+            try:
+                member = guild.get_member(int(user_id))
+                if member and verified_role not in member.roles:
+                    await member.add_roles(verified_role)
+                    added_count += 1
+            except:
+                continue
+
+        print(
+            f"Добавлено {added_count} верифицированных игроков в роль на сервере '{guild.name}'"
+        )
+    except Exception as e:
+        print(f"Ошибка при добавлении игроков в роль на сервере '{guild.name}': {e}")
+
+    return verified_role
+
 
 def setup(bot):
     @bot.event
     async def on_message(message):
         if message.author.bot:
+            return
+
+        # Пропускаем команды
+        if message.content.startswith("!"):
+            await bot.process_commands(message)
             return
 
         if message.channel.name == VERIFY_CHANNEL_NAME:
@@ -181,7 +237,8 @@ def setup(bot):
                 # Проверка 2: Существующий Discord ID
                 c = db.cursor()
                 c.execute(
-                    "SELECT 1 FROM players WHERE discordid = ?", (str(message.author.id),)
+                    "SELECT 1 FROM players WHERE discordid = ?",
+                    (str(message.author.id),),
                 )
                 if c.fetchone():
                     results_channel = discord.utils.get(
@@ -203,7 +260,8 @@ def setup(bot):
 
                 # Проверка 3: Существующее имя игрока
                 c.execute(
-                    "SELECT 1 FROM players WHERE playername = ?", (message.content.strip(),)
+                    "SELECT 1 FROM players WHERE playername = ?",
+                    (message.content.strip(),),
                 )
                 if c.fetchone():
                     results_channel = discord.utils.get(
@@ -232,7 +290,9 @@ def setup(bot):
                 )
                 embed.set_footer(text=f"ID: {message.id}")
 
-                files = [await attachment.to_file() for attachment in message.attachments]
+                files = [
+                    await attachment.to_file() for attachment in message.attachments
+                ]
                 view = VerifyView(message.id, message.guild.id, message.content.strip())
 
                 await moderator.send(embed=embed, files=files, view=view)

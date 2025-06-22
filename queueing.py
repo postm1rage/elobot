@@ -5,7 +5,6 @@ from config import (
     matches_db,
     MODES,
     MODE_NAMES,
-    VERIFIED_ROLE_NAME,
     MAPS,
     MODERATOR_ID,
 )
@@ -228,8 +227,7 @@ class ReportView(View):
                     f"**Match ID:** {self.match_id}\n"
                     f"**Режим:** {mode_name}\n"
                     f"**Победитель:** {winner}\n"
-                    f"**Проигравший:** {loser}\n"
-                    f"**Причина:** Принятый репорт\n\n"
+                    f"**Проигравший:** {loser}\n\n"
                     f"**Решение принял:** {moderator_name}\n\n"
                     f"**Изменения ELO:**\n"
                     f"{winner}: {old_winner_rating} → **{new_winner_rating}** ({winner_change:+})\n"
@@ -242,9 +240,11 @@ class ReportView(View):
             # Ищем канал результатов
             results_channel = None
             for guild in global_bot.guilds:
-                channel = discord.utils.get(guild.text_channels, name="elobot-results")
-                if channel:
-                    results_channel = channel
+                for channel in guild.text_channels:
+                    if channel.name == "elobot-results":
+                        results_channel = channel
+                        break
+                if results_channel:
                     break
 
             if results_channel:
@@ -263,7 +263,7 @@ queues = {mode: [] for mode in MODES.values()}
 map_voting = (
     {}
 )  # {match_id: {"players": [p1, p2], "remaining_maps": [...], "current_player": discord_id}}
-battle_links = {}  # {match_id: {"player1_id": int, "player2_id": int, "link": str}}
+
 pending_results = (
     {}
 )  # {message_id: {"match_id": int, "player1": str, "player2": str, "scores": str, "screenshot": str}}
@@ -289,36 +289,41 @@ async def send_map_selection(match_id):
     current_player = voting["current_player"]
     remaining_maps = voting["remaining_maps"]
 
-    try:
-        player1 = await global_bot.fetch_user(voting["players"][0])
-        player2 = await global_bot.fetch_user(voting["players"][1])
-    except:
-        return
+    # Удаляем предыдущее сообщение если есть
+    if current_player in voting.get("messages", {}):
+        try:
+            await voting["messages"][current_player].delete()
+        except:
+            pass
 
-    # Создаем View для выбора карты
-    view = MapSelectionView(match_id, remaining_maps, current_player)
-
-    # Отправляем сообщение текущему игроку
     try:
+        # Создаем новое View
+        view = MapSelectionView(match_id, remaining_maps, current_player)
+
+        # Отправляем новое сообщение
         msg = await global_bot.get_user(current_player).send(
             f"**Ваш ход!** Выберите карту для вычеркивания:", view=view
         )
-        voting["messages"][current_player] = msg
-    except:
-        pass
 
-    # Уведомляем другого игрока
-    other_player = (
-        voting["players"][1]
-        if current_player == voting["players"][0]
-        else voting["players"][0]
-    )
-    try:
-        await global_bot.get_user(other_player).send(
-            f"Ожидайте своего хода. Сейчас выбирает {global_bot.get_user(current_player).mention}."
-        )
-    except:
-        pass
+        # Сохраняем ссылку на сообщение
+        voting.setdefault("messages", {})[current_player] = msg
+        view.message = msg  # Для доступа в on_timeout
+
+        # Уведомляем другого игрока
+        other_player = next(pid for pid in voting["players"] if pid != current_player)
+        try:
+            await global_bot.get_user(other_player).send(
+                f"Ожидайте своего хода. Сейчас выбирает <@{current_player}>."
+            )
+        except:
+            pass
+
+    except Exception as e:
+        print(f"Ошибка отправки выбора карт: {e}")
+        # Если не удалось отправить - пропускаем ход
+        voting["current_player"] = other_player
+        await asyncio.sleep(1)
+        await send_map_selection(match_id)
 
 
 class MapSelectionView(View):
@@ -326,6 +331,8 @@ class MapSelectionView(View):
         super().__init__(timeout=120)
         self.match_id = match_id
         self.player_id = player_id
+        self.maps = maps
+        self.has_responded = False  # Флаг для отслеживания ответа
 
         for map_name in maps:
             button = Button(
@@ -333,11 +340,70 @@ class MapSelectionView(View):
                 style=discord.ButtonStyle.secondary,
                 custom_id=f"map_{map_name}",
             )
-            button.callback = lambda i, b=button: self.button_callback(i, b)
+            button.callback = lambda i, m=map_name: self.button_callback(i, m)
             self.add_item(button)
 
-    async def button_callback(self, interaction: discord.Interaction, button: Button):
+    async def on_timeout(self):
+        """Автоматически выбирает случайную карту при таймауте"""
+        if self.has_responded:
+            return
+
+        self.has_responded = True
         global map_voting
+
+        if self.match_id not in map_voting:
+            return
+
+        voting = map_voting[self.match_id]
+
+        # Если карты закончились - завершаем
+        if not voting["remaining_maps"]:
+            await self.finish_map_selection()
+            return
+
+        # Выбираем случайную карту
+        selected_map = random.choice(voting["remaining_maps"])
+
+        try:
+            # Обновляем сообщение
+            await self.message.edit(
+                content=f"⏱ Время вышло! Автоматически вычеркнута карта **{selected_map}**",
+                view=None,
+            )
+        except discord.NotFound:
+            pass  # Сообщение уже удалено
+
+        # Обновляем список карт
+        if selected_map in voting["remaining_maps"]:
+            voting["remaining_maps"].remove(selected_map)
+        voting["last_selected"] = selected_map
+
+        # Проверяем завершение процесса
+        if len(voting["remaining_maps"]) <= 1:
+            await self.finish_map_selection()
+            return
+
+        # Передаем ход следующему игроку
+        voting["current_player"] = (
+            voting["players"][1]
+            if voting["current_player"] == voting["players"][0]
+            else voting["players"][0]
+        )
+
+        # Запускаем выбор для следующего игрока
+        await send_map_selection(self.match_id)
+
+    async def button_callback(self, interaction: discord.Interaction, map_name: str):
+        """Обработчик выбора карты"""
+        if self.has_responded:
+            await interaction.response.send_message(
+                "⌛ Это взаимодействие больше не активно", ephemeral=True
+            )
+            return
+
+        self.has_responded = True
+        global map_voting
+
         if self.match_id not in map_voting:
             await interaction.response.send_message(
                 "Процесс выбора карты завершен", ephemeral=True
@@ -345,29 +411,15 @@ class MapSelectionView(View):
             return
 
         voting = map_voting[self.match_id]
-        selected_map = button.label
+        selected_map = map_name
 
         # Удаляем выбранную карту
         if selected_map in voting["remaining_maps"]:
             voting["remaining_maps"].remove(selected_map)
-
         voting["last_selected"] = selected_map
 
         # Если осталась только одна карта - завершаем процесс
-        if len(voting["remaining_maps"]) == 1:  # Изменено с <= 1 на == 1
-            final_map = voting["remaining_maps"][0]
-            print(f"Черкание завершено! Карта: {final_map}")
-
-            await interaction.response.edit_message(
-                content=f"Вы вычеркнули карту **{selected_map}**", view=None
-            )
-            await self.finish_map_selection()
-            return
-        # Если карт не осталось вообще (маловероятно, но на всякий случай)
-        elif not voting["remaining_maps"]:
-            final_map = voting.get("last_selected", "Станция")
-            print(f"Черкание завершено! Карта: {final_map} (последняя вычеркнутая)")
-
+        if len(voting["remaining_maps"]) <= 1:
             await interaction.response.edit_message(
                 content=f"Вы вычеркнули карту **{selected_map}**", view=None
             )
@@ -384,51 +436,6 @@ class MapSelectionView(View):
         await interaction.response.edit_message(
             content=f"Вы вычеркнули карту **{selected_map}**", view=None
         )
-        await send_map_selection(self.match_id)
-
-    async def auto_select_map(self):
-        global map_voting
-        if self.match_id not in map_voting:
-            return
-
-        voting = map_voting[self.match_id]
-
-        # Если осталась только одна карта - завершаем
-        if len(voting["remaining_maps"]) == 1:
-            return
-
-        # Выбираем случайную карту
-        selected_map = random.choice(voting["remaining_maps"])
-        voting["remaining_maps"].remove(selected_map)
-        voting["last_selected"] = selected_map
-
-        # Если после удаления осталась одна карта
-        if len(voting["remaining_maps"]) == 1:
-            try:
-                await voting["messages"][self.player_id].edit(
-                    content=f"⏱ Вы не успели выбрать! Автоматически вычеркнута карта **{selected_map}**",
-                    view=None,
-                )
-            except:
-                pass
-            await self.finish_map_selection()
-            return
-
-        # Переключаем ход
-        voting["current_player"] = (
-            voting["players"][1]
-            if voting["current_player"] == voting["players"][0]
-            else voting["players"][0]
-        )
-
-        try:
-            await voting["messages"][self.player_id].edit(
-                content=f"⏱ Вы не успели выбрать! Автоматически вычеркнута карта **{selected_map}**",
-                view=None,
-            )
-        except:
-            pass
-
         await send_map_selection(self.match_id)
 
     async def finish_map_selection(self):
@@ -504,37 +511,23 @@ class MapSelectionView(View):
             except Exception as e:
                 print(f"Ошибка при отправке сообщения игроку {player_id}: {e}")
 
-        # Только после завершения черкания для режимов с картами
-        if "mode" in voting and voting["mode"] in [MODES["mots"], MODES["12min"]]:
-            # Запрос ссылки на битву
-            battle_links[self.match_id] = {
-                "players": [voting["players"][0], voting["players"][1]],
-                "player1_id": voting["players"][0],
-                "player2_id": voting["players"][1],
-                "link": None,
-            }
+        # Отправляем инструкцию обоим игрокам
+        try:
+            player1 = await global_bot.fetch_user(voting["players"][0])
+            player2 = await global_bot.fetch_user(voting["players"][1])
 
-            try:
-                # Запрос ссылки у первого игрока
-                user1 = await global_bot.fetch_user(voting["players"][0])
-                await user1.send(
-                    "🛠 Пожалуйста, создайте битву и отправьте ссылку на неё в этот чат в течение 5 минут."
-                )
+            instruction = (
+                "🔍 Найдите вашего противника в Discord и договоритесь о создании игры.\n"
+                "ℹ️ После завершения матча **победитель** должен отправить результат командой "
+                "`!result <ID_матча> <свой_счет>-<счет_соперника>` в личные сообщения боту, "
+                "приложив скриншот.\n"
+                "Пример: `!result 123 5-3`"
+            )
 
-                # Сообщение второму игроку
-                user2 = await global_bot.fetch_user(voting["players"][1])
-                await user2.send(
-                    "⏳ Ожидайте ссылку на битву от вашего противника в течение 5 минут."
-                )
-            except Exception as e:
-                print(f"Ошибка при запросе ссылки на битву: {e}")
-
-            # Отправляем напоминание о результате
-            try:
-                await user1.send(RESULT_REMINDER)
-                await user2.send(RESULT_REMINDER)
-            except Exception as e:
-                print(f"Ошибка при отправке напоминания: {e}")
+            await player1.send(instruction)
+            await player2.send(instruction)
+        except Exception as e:
+            print(f"Ошибка при отправке инструкции: {e}")
 
         # Удаляем данные о голосовании
         if self.match_id in map_voting:
@@ -785,21 +778,17 @@ async def create_match(mode, player1, player2):
                 )
                 embed.set_footer(text=f"Match ID: {match_id}")
 
+                # Отправляем инструкцию вместо запроса ссылки
+                instruction = (
+                    "🔍 Найдите вашего противника в Discord и договоритесь о создании игры.\n"
+                    f"**Discord противника:** {discord_tag}\n\n"
+                    "ℹ️ После завершения матча **победитель** должен отправить результат командой "
+                    "`!result <ID_матча> <свой_счет>-<счет_соперника>` в личные сообщения боту, "
+                    "приложив скриншот.\n"
+                    "Пример: `!result 123 5-3`"
+                )
                 await user.send(embed=embed)
-
-                # Если это player1 и режим без черкания, запрашиваем ссылку
-                if player_discord_id == player1["discord_id"] and mode not in [
-                    MODES["mots"],
-                    MODES["12min"],
-                ]:
-                    await user.send(
-                        "🛠 Пожалуйста, создайте битву и отправьте ссылку на неё в этот чат в течение 5 минут."
-                    )
-                    battle_links[match_id] = {
-                        "player1_id": player1["discord_id"],
-                        "player2_id": player2["discord_id"],
-                        "link": None,
-                    }
+                await user.send(instruction)
 
             except Exception as e:
                 print(f"Ошибка при отправке информации о матче: {e}")
@@ -818,100 +807,234 @@ async def create_match(mode, player1, player2):
                 "mode": mode,  # Сохраняем режим для последующего использования
             }
             await send_map_selection(match_id)
-        else:
-            # Для режимов без черкания сразу отправляем сообщение об ожидании
-            try:
-                user2 = await global_bot.fetch_user(player2["discord_id"])
-                await user2.send(
-                    "⏳ Ожидайте ссылку на битву от вашего противника в течение 5 минут."
-                )
-            except Exception as e:
-                print(f"Ошибка при отправке сообщения игроку 2: {e}")
-            pass
     except Exception as e:
         print(f"Error creating match: {e}")
 
 
-async def battle_link_timeout(match_id):
-    """Задача для обработки тайм-аута ссылки на битву"""
-    await asyncio.sleep(300)  # 5 минут
+async def check_expired_matches(bot):
+    await bot.wait_until_ready()
+    print(
+        f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Запущена задача проверки просроченных матчей"
+    )
 
-    if match_id in battle_links and battle_links[match_id]["link"] is None:
-        data = battle_links.pop(match_id)
-
+    while not bot.is_closed():
         try:
-            # Уведомляем игрока 1
-            user1 = await global_bot.fetch_user(data["player1_id"])
-            await user1.send("⌛ Время на отправку ссылки истекло. Матч отменен.")
+            # Проверяем каждые 5 минут
+            await asyncio.sleep(300)
 
-            # Уведомляем игрока 2
-            user2 = await global_bot.fetch_user(data["player2_id"])
-            await user2.send(
-                "⌛ Ваш противник не предоставил ссылку вовремя. Матч отменен."
+            now = datetime.now()
+            one_hour_ago = now - timedelta(hours=1)
+            print(
+                f"[{now.strftime('%H:%M:%S')}] Проверка матчей старше {one_hour_ago.strftime('%H:%M:%S')}"
             )
 
-            # Помечаем матч как отмененный в базе
             c = matches_db.cursor()
             c.execute(
-                "UPDATE matches SET is_cancelled = 1 WHERE matchid = ?", (match_id,)
+                "SELECT matchid, mode, player1, player2, start_time FROM matches WHERE isover = 0 AND start_time < ?",
+                (one_hour_ago,),
             )
-            matches_db.commit()
+            expired_matches = c.fetchall()
+
+            print(f"Найдено {len(expired_matches)} просроченных матчей")
+
+            for match in expired_matches:
+                match_id, mode, player1_name, player2_name, start_time = match
+                print(
+                    f"Обработка матча {match_id}: {player1_name} vs {player2_name} (начат в {start_time})"
+                )
+
+                # Двойная проверка статуса матча
+                c_check = matches_db.cursor()
+                c_check.execute(
+                    "SELECT isover FROM matches WHERE matchid = ?", (match_id,)
+                )
+                match_status = c_check.fetchone()
+
+                if match_status and match_status[0] == 1:
+                    print(f"Матч {match_id} уже завершен, пропускаем")
+                    continue
+
+                print(f"Матч {match_id} просрочен, завершаем автоматически")
+
+                # Обновляем матч как ничью
+                c_update = matches_db.cursor()
+                c_update.execute(
+                    "UPDATE matches SET player1score = 0, player2score = 0, isover = 1, isverified = 1 WHERE matchid = ?",
+                    (match_id,),
+                )
+                matches_db.commit()
+                print(f"Матч {match_id} помечен как завершенный (ничья)")
+
+                # Обновляем статистику игроков
+                try:
+                    rating1 = get_player_rating(player1_name, mode)
+                    rating2 = get_player_rating(player2_name, mode)
+                    new_rating1, new_rating2 = calculate_elo(
+                        rating1, rating2, 0.5
+                    )  # Ничья
+
+                    update_player_rating(player1_name, new_rating1, mode)
+                    update_player_rating(player2_name, new_rating2, mode)
+
+                    # Обновляем счетчики ничьих
+                    c_db = db.cursor()
+                    if mode == MODES["station5f"]:
+                        c_db.execute(
+                            "UPDATE players SET ties_station5f = ties_station5f + 1 WHERE playername = ?",
+                            (player1_name,),
+                        )
+                        c_db.execute(
+                            "UPDATE players SET ties_station5f = ties_station5f + 1 WHERE playername = ?",
+                            (player2_name,),
+                        )
+                    elif mode == MODES["mots"]:
+                        c_db.execute(
+                            "UPDATE players SET ties_mots = ties_mots + 1 WHERE playername = ?",
+                            (player1_name,),
+                        )
+                        c_db.execute(
+                            "UPDATE players SET ties_mots = ties_mots + 1 WHERE playername = ?",
+                            (player2_name,),
+                        )
+                    elif mode == MODES["12min"]:
+                        c_db.execute(
+                            "UPDATE players SET ties_12min = ties_12min + 1 WHERE playername = ?",
+                            (player1_name,),
+                        )
+                        c_db.execute(
+                            "UPDATE players SET ties_12min = ties_12min + 1 WHERE playername = ?",
+                            (player2_name,),
+                        )
+
+                    c_db.execute(
+                        "UPDATE players SET ties = ties + 1 WHERE playername IN (?, ?)",
+                        (player1_name, player2_name),
+                    )
+                    db.commit()
+                    print("Статистика игроков обновлена")
+                except Exception as e:
+                    print(f"Ошибка при обновлении статистики: {e}")
+
+                # Уведомление игроков в ЛС
+                try:
+                    user1_id = get_discord_id_by_nickname(player1_name)
+                    user2_id = get_discord_id_by_nickname(player2_name)
+
+                    # Создаем embed один раз
+                    embed_dm = discord.Embed(
+                        title="⏱ Матч завершен автоматически",
+                        description=(
+                            f"Матч #{match_id} между **{player1_name}** и **{player2_name}**\n"
+                            f"Режим: **{MODE_NAMES.get(mode, 'Unknown')}**\n"
+                            f"Был автоматически завершен вничью, так как превышено время (1 час).\n\n"
+                            f"**Изменения ELO:**\n"
+                            f"{player1_name}: {rating1} → **{new_rating1}** ({new_rating1 - rating1:+})\n"
+                            f"{player2_name}: {rating2} → **{new_rating2}** ({new_rating2 - rating2:+})"
+                        ),
+                        color=discord.Color.orange(),
+                    )
+
+                    # Отправляем уведомление игрокам
+                    if user1_id:
+                        user1 = await global_bot.fetch_user(user1_id)
+                        await user1.send(embed=embed_dm)
+                        print(f"Уведомление отправлено {player1_name} ({user1_id})")
+
+                    if user2_id:
+                        user2 = await global_bot.fetch_user(user2_id)
+                        await user2.send(embed=embed_dm)
+                        print(f"Уведомление отправлено {player2_name} ({user2_id})")
+
+                    # Отправляем ОДНО напоминание о результате (в общий чат матча)
+                    # Находим канал, где был создан матч
+                    try:
+                        # Получаем информацию о канале из первого игрока в очереди
+                        for queue in queues.values():
+                            for player in queue:
+                                if player["nickname"] in [
+                                    player1_name,
+                                    player2_name,
+                                ]:
+                                    channel_id = player["channel_id"]
+                                    channel = global_bot.get_channel(channel_id)
+                                    if channel:
+                                        await channel.send(RESULT_REMINDER)
+                                        print(
+                                            f"Напоминание отправлено в канал #{channel.name}"
+                                        )
+                                        break
+                            else:
+                                continue
+                            break
+                    except Exception as e:
+                        print(f"Ошибка при отправке напоминания в канал: {e}")
+
+                except Exception as e:
+                    print(f"Ошибка при отправке уведомления игрокам: {e}")
+
+                # Отправка в канал результатов
+                try:
+                    embed_channel = discord.Embed(
+                        title="⏱ Матч завершен (время вышло)",
+                        description=(
+                            f"**Match ID:** {match_id}\n"
+                            f"**Режим:** {MODE_NAMES.get(mode, 'Unknown')}\n"
+                            f"**Игроки:** {player1_name} vs {player2_name}\n"
+                            f"**Результат:** Ничья 0:0\n\n"
+                            f"**Причина:** Превышено максимальное время матча (1 час)\n\n"
+                            f"**Изменения ELO:**\n"
+                            f"{player1_name}: {rating1} → **{new_rating1}** ({new_rating1 - rating1:+})\n"
+                            f"{player2_name}: {rating2} → **{new_rating2}** ({new_rating2 - rating2:+})"
+                        ),
+                        color=discord.Color.gold(),  # Желтый цвет
+                    )
+                    embed_channel.set_footer(
+                        text="Матч завершен автоматически по истечении времени"
+                    )
+
+                    # Ищем канал elobot-results
+                    results_channel_found = None
+                    for guild in global_bot.guilds:
+                        for channel in guild.text_channels:
+                            if channel.name == "elobot-results":
+                                results_channel_found = channel
+                                print(
+                                    f"Найден канал результатов: {channel.name} ({channel.id}) на сервере {guild.name}"
+                                )
+                                break
+                        if results_channel_found:
+                            break
+
+                    if results_channel_found:
+                        await results_channel_found.send(embed=embed_channel)
+                        print(
+                            f"Сообщение о матче {match_id} отправлено в канал результатов"
+                        )
+                    else:
+                        print("⚠ Канал elobot-results не найден ни на одном сервере")
+                except Exception as e:
+                    print(f"Ошибка при отправке в канал: {e}")
+
         except Exception as e:
-            print(f"Ошибка при обработке тайм-аута ссылки: {e}")
+            print(f"Критическая ошибка в check_expired_matches: {e}")
+            with open("bot_errors.log", "a") as f:
+                f.write(
+                    f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ERROR in check_expired_matches: {e}\n"
+                )
 
 
 def setup(bot):
-
     global global_bot
     global_bot = bot
 
     @bot.event
     async def on_message(message):
+        # Важно: сначала обработать команды бота
+        await bot.process_commands(message)
+
         # Обрабатываем только личные сообщения не от бота
         if not isinstance(message.channel, discord.DMChannel) or message.author.bot:
-            await bot.process_commands(message)
             return
-
-        # Проверка ссылок на битву
-        user_id = message.author.id
-        match_id_to_send = None
-
-        # Ищем матчи, где этот пользователь - player1 и ссылка еще не отправлена
-        for match_id, data in battle_links.items():
-            if data["player1_id"] == user_id and data["link"] is None:
-                match_id_to_send = match_id
-                break
-
-        if match_id_to_send is not None:
-            # Проверяем, содержит ли сообщение "battle"
-            if "battle" in message.content.lower():
-                # Сохраняем ссылку
-                battle_links[match_id_to_send]["link"] = message.content
-
-                # Отправляем ссылку второму игроку
-                try:
-                    player2_id = battle_links[match_id_to_send]["player2_id"]
-                    user2 = await global_bot.fetch_user(player2_id)
-                    await user2.send(
-                        f"🔗 Ссылка на битву от вашего противника: {message.content}"
-                    )
-                    await message.channel.send(
-                        "✅ Ссылка отправлена вашему противнику!"
-                    )
-
-                    # Отправляем напоминание о результате
-                    pass
-                except Exception as e:
-                    await message.channel.send(
-                        "❌ Не удалось отправить ссылку противнику. Обратитесь к администратору."
-                    )
-                    print(f"Ошибка отправки ссылки: {e}")
-            else:
-                await message.channel.send(
-                    "❌ Это не похоже на ссылку на битву. Пожалуйста, отправьте действительную ссылку."
-                )
-
-        await bot.process_commands(message)
 
     @bot.command()
     async def play(ctx):
@@ -919,9 +1042,14 @@ def setup(bot):
         if ctx.channel.name != "elobot-queue":
             return
 
-        # Проверка верификации
-        verified_role = discord.utils.get(ctx.guild.roles, name=VERIFIED_ROLE_NAME)
-        if not verified_role or verified_role not in ctx.author.roles:
+        c = db.cursor()
+        c.execute(
+            "SELECT playername, in_queue FROM players WHERE discordid = ?",
+            (str(ctx.author.id),),
+        )
+        player_data = c.fetchone()
+
+        if not player_data:
             await ctx.send("❌ Требуется верификация для поиска игры")
             return
 
@@ -1087,84 +1215,125 @@ def setup(bot):
 
         await ctx.send(embed=embed)
 
-    @bot.command()
-    async def result(ctx, match_id: int, scores: str):
-        """Отправка результата матча с приложенным скриншотом"""
-        # Проверяем, что команда вызвана в ЛС
-        if not isinstance(ctx.channel, discord.DMChannel):
-            await ctx.send(
-                "❌ Эта команда доступна только в личных сообщениях с ботом."
+        @bot.command()
+        async def result(ctx, match_id: int, scores: str):
+            """Отправка результата матча с приложенным скриншотом"""
+            # Проверяем, что команда вызвана в ЛС
+            if not isinstance(ctx.channel, discord.DMChannel):
+                await ctx.send(
+                    "❌ Эта команда доступна только в личных сообщениях с ботом."
+                )
+                return
+
+            if match_id in pending_reports:
+                await ctx.send(
+                    "❌ Нельзя отправить результат: по этому матчу есть активный репорт."
+                )
+                return
+
+            # Проверяем формат счета
+            if not re.match(r"^\d+-\d+$", scores):
+                await ctx.send(
+                    "❌ Неверный формат счета. Используйте: `!result <ID матча> <счет-игрока1>-<счет-игрока2>`"
+                )
+                return
+
+            # Проверяем равенство счета
+            score1, score2 = map(int, scores.split("-"))
+            if score1 == score2:
+                await ctx.send(
+                    "❌ Счет не может быть равным! Матч должен иметь победителя."
+                )
+                return
+
+            # Проверяем наличие скриншота
+            if not ctx.message.attachments:
+                await ctx.send(
+                    "❌ Пожалуйста, прикрепите скриншот с результатом матча."
+                )
+                return
+
+            screenshot = ctx.message.attachments[0].url
+
+            # Проверяем существование матча
+            c = matches_db.cursor()
+            c.execute(
+                "SELECT player1, player2, mode FROM matches WHERE matchid = ?", (match_id,)
             )
-            return
+            match_data = c.fetchone()
 
-        if match_id in pending_reports:
-            await ctx.send(
-                "❌ Нельзя отправить результат: по этому матчу есть активный репорт."
+            if not match_data:
+                await ctx.send("❌ Матч с указанным ID не найден.")
+                return
+
+            player1, player2, mode = match_data
+
+            # Определяем предполагаемого победителя по счету
+            if score1 > score2:
+                presumed_winner = player1
+            else:
+                presumed_winner = player2
+
+            # Проверяем, что команду вызвал победитель
+            c_db = db.cursor()
+            c_db.execute(
+                "SELECT playername FROM players WHERE discordid = ?",
+                (str(ctx.author.id),),
             )
-            return
+            player_data = c_db.fetchone()
 
-        # Проверяем формат счета
-        if not re.match(r"^\d+-\d+$", scores):
-            await ctx.send(
-                "❌ Неверный формат счета. Используйте: `!result <ID матча> <счет-игрока1>-<счет-игрока2>`"
-            )
-            return
+            if not player_data:
+                await ctx.send("❌ Вы не зарегистрированы в системе.")
+                return
 
-        # Проверяем наличие скриншота
-        if not ctx.message.attachments:
-            await ctx.send("❌ Пожалуйста, прикрепите скриншот с результатом матча.")
-            return
+            submitter_name = player_data[0]
 
-        screenshot = ctx.message.attachments[0].url
+            if submitter_name != presumed_winner:
+                await ctx.send(
+                    f"❌ Результат должен отправлять победитель матча ({presumed_winner})!"
+                )
+                return
 
-        # Проверяем существование матча
-        c = matches_db.cursor()
-        c.execute("SELECT player1, player2 FROM matches WHERE matchid = ?", (match_id,))
-        match_data = c.fetchone()
+            # Сохраняем результат в словарь для модерации
+            pending_results[ctx.message.id] = {
+                "match_id": match_id,
+                "player1": player1,
+                "player2": player2,
+                "scores": scores,
+                "screenshot": screenshot,
+                "submitted_by": ctx.author.id,
+                "mode": mode  # Добавлен режим для правильного расчёта ELO
+            }
 
-        if not match_data:
-            await ctx.send("❌ Матч с указанным ID не найден.")
-            return
+            # Отправляем результат на модерацию
+            try:
+                moderator = await global_bot.fetch_user(MODERATOR_ID)
+                # Создаем embed
+                embed = discord.Embed(
+                    title="🆕 Новый результат матча",
+                    description=f"Требуется проверка модератора",
+                    color=discord.Color.orange(),
+                )
+                embed.add_field(name="Match ID", value=str(match_id), inline=False)
+                embed.add_field(
+                    name="Игроки", value=f"{player1} vs {player2}", inline=False
+                )
+                embed.add_field(name="Счет", value=scores, inline=False)
+                embed.add_field(
+                    name="Отправил", value=f"<@{ctx.author.id}>", inline=False
+                )
+                embed.set_image(url=screenshot)
 
-        player1, player2 = match_data
+                # Создаем View для подтверждения
+                view = ConfirmMatchView(match_id, bot, ctx.message.id)
+                await moderator.send(embed=embed, view=view)
 
-        # Сохраняем результат в словарь для модерации
-        pending_results[ctx.message.id] = {
-            "match_id": match_id,
-            "player1": player1,
-            "player2": player2,
-            "scores": scores,
-            "screenshot": screenshot,
-            "submitted_by": ctx.author.id,
-        }
-
-        # Отправляем результат на модерацию
-        try:
-            moderator = await global_bot.fetch_user(MODERATOR_ID)
-            # Создаем embed
-            embed = discord.Embed(
-                title="🆕 Новый результат матча",
-                description=f"Требуется проверка модератора",
-                color=discord.Color.orange(),
-            )
-            embed.add_field(name="Match ID", value=str(match_id), inline=False)
-            embed.add_field(
-                name="Игроки", value=f"{player1} vs {player2}", inline=False
-            )
-            embed.add_field(name="Счет", value=scores, inline=False)
-            embed.add_field(name="Отправил", value=f"<@{ctx.author.id}>", inline=False)
-            embed.set_image(url=screenshot)
-
-            # Создаем View для подтверждения
-            view = ConfirmMatchView(match_id, bot, ctx.message.id)
-            await moderator.send(embed=embed, view=view)
-
-            await ctx.send("✅ Результат отправлен на проверку модератору.")
-        except Exception as e:
-            print(f"Ошибка при отправке модератору: {e}")
-            await ctx.send(
-                "❌ Не удалось отправить результат модератору. Обратитесь к администратору."
-            )
+                await ctx.send("✅ Результат отправлен на проверку модератору.")
+            except Exception as e:
+                print(f"Ошибка при отправке модератору: {e}")
+                await ctx.send(
+                    "❌ Не удалось отправить результат модератору. Обратитесь к администратору."
+                )
 
     @bot.command()
     async def giveup(ctx):
@@ -1175,15 +1344,14 @@ def setup(bot):
         ):
             return
 
-        # Проверка верификации только в текстовых каналах
-        if isinstance(ctx.channel, discord.TextChannel):
-            verified_role = discord.utils.get(ctx.guild.roles, name=VERIFIED_ROLE_NAME)
-            if not verified_role or verified_role not in ctx.author.roles:
-                await ctx.send(
-                    "❌ Требуется верификация для использования этой команды"
-                )
-                return
-
+        # ПРОВЕРКА ВЕРИФИКАЦИИ ЧЕРЕЗ БАЗУ ДАННЫХ
+        c = db.cursor()
+        c.execute(
+            "SELECT playername FROM players WHERE discordid = ?", (str(ctx.author.id),)
+        )
+        if not c.fetchone():
+            await ctx.send("❌ Требуется верификация для использования этой команды")
+            return
         # Находим активный матч игрока
         c = db.cursor()
         c.execute(
@@ -1252,12 +1420,15 @@ def setup(bot):
         # Обновляем ELO
         winner_rating = get_player_rating(winner, mode)
         loser_rating = get_player_rating(loser, mode)
+
+        # Всегда передаём 1 (победа победителя)
         new_winner_rating, new_loser_rating = calculate_elo(
-            winner_rating, loser_rating, 1 if winner == player1 else 0
+            winner_rating, loser_rating, 1
         )
 
         update_player_rating(winner, new_winner_rating, mode)
         update_player_rating(loser, new_loser_rating, mode)
+        # КОНЕЦ ИСПРАВЛЕНИЯ
 
         # Отправляем уведомление
         mode_name = MODE_NAMES.get(mode, "Unknown")
@@ -1339,223 +1510,6 @@ def setup(bot):
             await loser_user.send(embed=embed)
         except Exception as e:
             print(f"Ошибка при отправке уведомления о сдаче: {e}")
-
-    @bot.event
-    async def on_ready():
-        bot.loop.create_task(check_expired_matches())
-
-    async def check_expired_matches():
-        await bot.wait_until_ready()
-        print(
-            f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Запущена задача проверки просроченных матчей"
-        )
-
-        while not bot.is_closed():
-            try:
-                # Проверяем каждые 5 минут
-                await asyncio.sleep(300)
-
-                now = datetime.now()
-                one_hour_ago = now - timedelta(hours=1)
-                print(
-                    f"[{now.strftime('%H:%M:%S')}] Проверка матчей старше {one_hour_ago.strftime('%H:%M:%S')}"
-                )
-
-                c = matches_db.cursor()
-                c.execute(
-                    "SELECT matchid, mode, player1, player2, start_time FROM matches WHERE isover = 0 AND start_time < ?",
-                    (one_hour_ago,),
-                )
-                expired_matches = c.fetchall()
-
-                print(f"Найдено {len(expired_matches)} просроченных матчей")
-
-                for match in expired_matches:
-                    match_id, mode, player1_name, player2_name, start_time = match
-                    print(
-                        f"Обработка матча {match_id}: {player1_name} vs {player2_name} (начат в {start_time})"
-                    )
-
-                    # Двойная проверка статуса матча
-                    c_check = matches_db.cursor()
-                    c_check.execute(
-                        "SELECT isover FROM matches WHERE matchid = ?", (match_id,)
-                    )
-                    match_status = c_check.fetchone()
-
-                    if match_status and match_status[0] == 1:
-                        print(f"Матч {match_id} уже завершен, пропускаем")
-                        continue
-
-                    print(f"Матч {match_id} просрочен, завершаем автоматически")
-
-                    # Обновляем матч как ничью
-                    c_update = matches_db.cursor()
-                    c_update.execute(
-                        "UPDATE matches SET player1score = 0, player2score = 0, isover = 1, isverified = 1 WHERE matchid = ?",
-                        (match_id,),
-                    )
-                    matches_db.commit()
-                    print(f"Матч {match_id} помечен как завершенный (ничья)")
-
-                    # Обновляем статистику игроков
-                    try:
-                        rating1 = get_player_rating(player1_name, mode)
-                        rating2 = get_player_rating(player2_name, mode)
-                        new_rating1, new_rating2 = calculate_elo(
-                            rating1, rating2, 0.5
-                        )  # Ничья
-
-                        update_player_rating(player1_name, new_rating1, mode)
-                        update_player_rating(player2_name, new_rating2, mode)
-
-                        # Обновляем счетчики ничьих
-                        c_db = db.cursor()
-                        if mode == MODES["station5f"]:
-                            c_db.execute(
-                                "UPDATE players SET ties_station5f = ties_station5f + 1 WHERE playername = ?",
-                                (player1_name,),
-                            )
-                            c_db.execute(
-                                "UPDATE players SET ties_station5f = ties_station5f + 1 WHERE playername = ?",
-                                (player2_name,),
-                            )
-                        elif mode == MODES["mots"]:
-                            c_db.execute(
-                                "UPDATE players SET ties_mots = ties_mots + 1 WHERE playername = ?",
-                                (player1_name,),
-                            )
-                            c_db.execute(
-                                "UPDATE players SET ties_mots = ties_mots + 1 WHERE playername = ?",
-                                (player2_name,),
-                            )
-                        elif mode == MODES["12min"]:
-                            c_db.execute(
-                                "UPDATE players SET ties_12min = ties_12min + 1 WHERE playername = ?",
-                                (player1_name,),
-                            )
-                            c_db.execute(
-                                "UPDATE players SET ties_12min = ties_12min + 1 WHERE playername = ?",
-                                (player2_name,),
-                            )
-
-                        c_db.execute(
-                            "UPDATE players SET ties = ties + 1 WHERE playername IN (?, ?)",
-                            (player1_name, player2_name),
-                        )
-                        db.commit()
-                        print("Статистика игроков обновлена")
-                    except Exception as e:
-                        print(f"Ошибка при обновлении статистики: {e}")
-
-                    # Уведомление игроков в ЛС
-                    try:
-                        user1_id = get_discord_id_by_nickname(player1_name)
-                        user2_id = get_discord_id_by_nickname(player2_name)
-
-                        # Создаем embed один раз
-                        embed_dm = discord.Embed(
-                            title="⏱ Матч завершен автоматически",
-                            description=(
-                                f"Матч #{match_id} между **{player1_name}** и **{player2_name}**\n"
-                                f"Режим: **{MODE_NAMES.get(mode, 'Unknown')}**\n"
-                                f"Был автоматически завершен вничью, так как превышено время (1 час).\n\n"
-                                f"**Изменения ELO:**\n"
-                                f"{player1_name}: {rating1} → **{new_rating1}** ({new_rating1 - rating1:+})\n"
-                                f"{player2_name}: {rating2} → **{new_rating2}** ({new_rating2 - rating2:+})"
-                            ),
-                            color=discord.Color.orange(),
-                        )
-
-                        # Отправляем уведомление игрокам
-                        if user1_id:
-                            user1 = await global_bot.fetch_user(user1_id)
-                            await user1.send(embed=embed_dm)
-                            print(f"Уведомление отправлено {player1_name} ({user1_id})")
-
-                        if user2_id:
-                            user2 = await global_bot.fetch_user(user2_id)
-                            await user2.send(embed=embed_dm)
-                            print(f"Уведомление отправлено {player2_name} ({user2_id})")
-
-                        # Отправляем ОДНО напоминание о результате (в общий чат матча)
-                        # Находим канал, где был создан матч
-                        try:
-                            # Получаем информацию о канале из первого игрока в очереди
-                            for queue in queues.values():
-                                for player in queue:
-                                    if player["nickname"] in [
-                                        player1_name,
-                                        player2_name,
-                                    ]:
-                                        channel_id = player["channel_id"]
-                                        channel = global_bot.get_channel(channel_id)
-                                        if channel:
-                                            await channel.send(RESULT_REMINDER)
-                                            print(
-                                                f"Напоминание отправлено в канал #{channel.name}"
-                                            )
-                                            break
-                                else:
-                                    continue
-                                break
-                        except Exception as e:
-                            print(f"Ошибка при отправке напоминания в канал: {e}")
-
-                    except Exception as e:
-                        print(f"Ошибка при отправке уведомления игрокам: {e}")
-
-                    # Отправка в канал результатов
-                    try:
-                        embed_channel = discord.Embed(
-                            title="⏱ Матч завершен (время вышло)",
-                            description=(
-                                f"**Match ID:** {match_id}\n"
-                                f"**Режим:** {MODE_NAMES.get(mode, 'Unknown')}\n"
-                                f"**Игроки:** {player1_name} vs {player2_name}\n"
-                                f"**Результат:** Ничья 0:0\n\n"
-                                f"**Причина:** Превышено максимальное время матча (1 час)\n\n"
-                                f"**Изменения ELO:**\n"
-                                f"{player1_name}: {rating1} → **{new_rating1}** ({new_rating1 - rating1:+})\n"
-                                f"{player2_name}: {rating2} → **{new_rating2}** ({new_rating2 - rating2:+})"
-                            ),
-                            color=discord.Color.gold(),  # Желтый цвет
-                        )
-                        embed_channel.set_footer(
-                            text="Матч завершен автоматически по истечении времени"
-                        )
-
-                        # Ищем канал elobot-results
-                        results_channel_found = None
-                        for guild in global_bot.guilds:
-                            for channel in guild.text_channels:
-                                if channel.name == "elobot-results":
-                                    results_channel_found = channel
-                                    print(
-                                        f"Найден канал результатов: {channel.name} ({channel.id}) на сервере {guild.name}"
-                                    )
-                                    break
-                            if results_channel_found:
-                                break
-
-                        if results_channel_found:
-                            await results_channel_found.send(embed=embed_channel)
-                            print(
-                                f"Сообщение о матче {match_id} отправлено в канал результатов"
-                            )
-                        else:
-                            print(
-                                "⚠ Канал elobot-results не найден ни на одном сервере"
-                            )
-                    except Exception as e:
-                        print(f"Ошибка при отправке в канал: {e}")
-
-            except Exception as e:
-                print(f"Критическая ошибка в check_expired_matches: {e}")
-                with open("bot_errors.log", "a") as f:
-                    f.write(
-                        f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ERROR in check_expired_matches: {e}\n"
-                    )
 
     @bot.command()
     async def report(ctx, match_id: int, *, reason: str):
@@ -1675,6 +1629,14 @@ class ConfirmMatchView(View):
             )
             return
 
+        # Проверяем равенство счета
+        if score1 == score2:
+            await interaction.response.send_message(
+                "❌ Счет не может быть равным! Матч должен иметь победителя",
+                ephemeral=True,
+            )
+            return
+
         # Получаем информацию о матче из БД
         c = matches_db.cursor()
         c.execute(
@@ -1689,6 +1651,35 @@ class ConfirmMatchView(View):
 
         mode, player1, player2, map_name = match
         mode_name = MODE_NAMES.get(mode, "Unknown")
+
+        # Определяем предполагаемого победителя по счету
+        if score1 > score2:
+            presumed_winner = player1
+        else:
+            presumed_winner = player2
+
+        # Проверяем, что результат отправил победитель
+        c_db = db.cursor()
+        c_db.execute(
+            "SELECT playername FROM players WHERE discordid = ?",
+            (str(result_data["submitted_by"]),),
+        )
+        submitter_data = c_db.fetchone()
+
+        if not submitter_data:
+            await interaction.response.send_message(
+                "❌ Не удалось идентифицировать отправителя результата", ephemeral=True
+            )
+            return
+
+        submitter_name = submitter_data[0]
+
+        if submitter_name != presumed_winner:
+            await interaction.response.send_message(
+                f"❌ Результат должен отправлять победитель матча ({presumed_winner})!",
+                ephemeral=True,
+            )
+            return
 
         # Определяем результат на основе счета
         if score1 > score2:

@@ -4,3 +4,4 @@ elobotplayers.db
 __pycache__/
 *.pyc
 elobotmatches.db
+*.log
