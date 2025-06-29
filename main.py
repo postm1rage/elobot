@@ -36,6 +36,23 @@ handler = logging.FileHandler(filename="discord.log", encoding="utf-8", mode="w"
 async def on_ready():
     print(f"Бот {bot.user.name} запущен!")
 
+    # Сбрасываем флаги в очереди в БД
+    try:
+        c = db.cursor()
+        c.execute("UPDATE players SET in_queue = 0")
+        db.commit()
+        print("[INIT] Сброшены флаги in_queue для всех игроков")
+    except Exception as e:
+        print(f"[INIT] Ошибка сброса флагов: {e}")
+
+    # Восстанавливаем очереди из БД
+    try:
+        c = db.cursor()
+        c.execute("SELECT playername, discordid FROM players WHERE in_queue = 1")
+        players_in_queue = c.fetchall()
+    except Exception as e:
+        print(f"[INIT] Ошибка восстановления очереди: {e}")
+
     # Создаем фоновую задачу
     bot.loop.create_task(check_expired_matches(bot))
 
