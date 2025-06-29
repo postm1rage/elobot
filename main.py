@@ -207,60 +207,29 @@ async def playerinfo(ctx, nickname: str):
 
 @bot.command()
 async def leaderboard(ctx):
-    """Показывает таблицу лидеров с статистикой по режимам"""
+    """Показывает таблицу лидеров с кнопками выбора режима"""
+    # Сразу показываем общий рейтинг (any)
+    await send_leaderboard(ctx, "overall")
 
-    class LeaderboardView(View):
-        def __init__(self):
-            super().__init__(timeout=30)
-            self.selected_mode = None
 
-            options = [
-                discord.SelectOption(
-                    label="Overall", value="overall", description="Общий рейтинг"
-                ),
-                discord.SelectOption(label="Station 5 Flags", value="station5flags"),
-                discord.SelectOption(label="MotS Solo", value="mots"),
-                discord.SelectOption(label="12 Minute", value="12min"),
-            ]
-
-            select = Select(placeholder="Выберите режим", options=options)
-            select.callback = self.select_callback
-            self.add_item(select)
-
-        async def select_callback(self, interaction: discord.Interaction):
-            if interaction.user.id != ctx.author.id:
-                await interaction.response.send_message(
-                    "Это не ваша команда!", ephemeral=True
-                )
-                return
-
-            self.selected_mode = interaction.data["values"][0]
-            await interaction.response.defer()
-            self.stop()
-
-    view = LeaderboardView()
-    msg = await ctx.send("Выберите режим для таблицы лидеров:", view=view)
-
-    if await view.wait() or not view.selected_mode:
-        await msg.edit(content="Время выбора истекло", view=None)
-        return
+async def send_leaderboard(ctx, mode_key):
+    """Отправляет/редактирует таблицу лидеров для указанного режима"""
+    # Определяем колонки для режима
+    elo_col, wins_col, losses_col, ties_col = LEADERBOARD_MODES[mode_key]
 
     # Получаем данные из БД
     c = db.cursor()
-    elo_col, wins_col, losses_col, ties_col = LEADERBOARD_MODES[view.selected_mode]
-
     c.execute(
         f"""
-    SELECT playername, {elo_col}, {wins_col}, {losses_col}, {ties_col}
-    FROM players 
-    ORDER BY {elo_col} DESC 
-    LIMIT 10
-    """
+        SELECT playername, {elo_col}, {wins_col}, {losses_col}, {ties_col}
+        FROM players 
+        ORDER BY {elo_col} DESC 
+        LIMIT 10
+        """
     )
-
     leaders = c.fetchall()
 
-    # Формируем embed
+    # Форматируем название режима
     mode_names = {
         "overall": "Общий рейтинг",
         "station5flags": "Station 5 Flags",
@@ -268,8 +237,9 @@ async def leaderboard(ctx):
         "12min": "12 Minute",
     }
 
+    # Создаем embed
     embed = discord.Embed(
-        title=f"🏆 Топ-10 игроков: {mode_names[view.selected_mode]}",
+        title=f"🏆 Топ-10 игроков: {mode_names[mode_key]}",
         color=discord.Color.gold(),
     )
 
@@ -288,7 +258,115 @@ async def leaderboard(ctx):
         )
 
     embed.set_footer(text=f"Обновлено: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    await msg.edit(content=None, embed=embed, view=None)
+
+    # Создаем View с кнопками
+    view = LeaderboardView(mode_key)
+
+    # Если сообщение уже существует - редактируем, иначе создаем новое
+    if hasattr(ctx, "leaderboard_message"):
+        await ctx.leaderboard_message.edit(embed=embed, view=view)
+    else:
+        ctx.leaderboard_message = await ctx.send(embed=embed, view=view)
+
+
+class LeaderboardView(discord.ui.View):
+    """View с кнопками для переключения режимов лидерборда"""
+
+    def __init__(self, current_mode):
+        super().__init__(timeout=180)
+        self.current_mode = current_mode
+
+        # Создаем кнопки для всех режимов
+        modes = [
+            ("🌟 Общий", "overall", discord.ButtonStyle.green),
+            ("🚩 Station", "station5flags", discord.ButtonStyle.blurple),
+            ("🔫 MotS", "mots", discord.ButtonStyle.red),
+            ("⏱ 12min", "12min", discord.ButtonStyle.grey),
+        ]
+
+        for label, mode, style in modes:
+            # Для текущего режима делаем кнопку неактивной
+            disabled = mode == current_mode
+            button = discord.ui.Button(
+                label=label, style=style, custom_id=f"lb_{mode}", disabled=disabled
+            )
+            button.callback = lambda i, m=mode: self.button_callback(i, m)
+            self.add_item(button)
+
+    async def button_callback(self, interaction: discord.Interaction, mode: str):
+        # Обновляем лидерборд для выбранного режима
+        await send_leaderboard(interaction, mode)
+        await interaction.response.defer()
+
+    async def on_timeout(self):
+        # Делаем все кнопки неактивными после таймаута
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                item.disabled = True
+        try:
+            await self.message.edit(view=self)
+        except:
+            pass
+
+
+async def send_leaderboard(source, mode_key):
+    """Универсальная функция отправки/обновления лидерборда"""
+    # Определяем колонки для режима
+    elo_col, wins_col, losses_col, ties_col = LEADERBOARD_MODES[mode_key]
+
+    # Получаем данные из БД
+    c = db.cursor()
+    c.execute(
+        f"""
+        SELECT playername, {elo_col}, {wins_col}, {losses_col}, {ties_col}
+        FROM players 
+        ORDER BY {elo_col} DESC 
+        LIMIT 10
+        """
+    )
+    leaders = c.fetchall()
+
+    # Форматируем название режима
+    mode_names = {
+        "overall": "Общий рейтинг",
+        "station5flags": "Station 5 Flags",
+        "mots": "MotS Solo",
+        "12min": "12 Minute",
+    }
+
+    # Создаем embed
+    embed = discord.Embed(
+        title=f"🏆 Топ-10 игроков: {mode_names[mode_key]}",
+        color=discord.Color.gold(),
+    )
+
+    for i, (name, elo, wins, losses, ties) in enumerate(leaders, 1):
+        total = wins + losses + ties
+        winrate = (wins / total * 100) if total > 0 else 0
+
+        embed.add_field(
+            name=f"{i}. {name}",
+            value=(
+                f"ELO: {elo}\n"
+                f"Победы: {wins} | Поражения: {losses} | Ничьи: {ties}\n"
+                f"Винрейт: {winrate:.1f}%"
+            ),
+            inline=False,
+        )
+
+    embed.set_footer(text=f"Обновлено: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+
+    # Создаем View с кнопками
+    view = LeaderboardView(mode_key)
+
+    # Определяем как обновлять сообщение
+    if isinstance(source, discord.Interaction):
+        # Для взаимодействия с кнопкой
+        view.message = source.message
+        await source.message.edit(embed=embed, view=view)
+    else:
+        # Для первоначального вызова команды
+        source.leaderboard_message = await source.send(embed=embed, view=view)
 
 
 @bot.event

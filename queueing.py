@@ -31,17 +31,18 @@ def save_queues_to_db():
         c = db.cursor()
         # Сначала сбрасываем все флаги
         c.execute("UPDATE players SET in_queue = 0")
-        
+
         # Устанавливаем флаги для игроков в очередях
         for mode, queue in queues.items():
             for player in queue:
                 c.execute(
                     "UPDATE players SET in_queue = 1 WHERE discordid = ?",
-                    (str(player['discord_id']),)
+                    (str(player["discord_id"]),),
                 )
         db.commit()
     except Exception as e:
         print(f"Ошибка сохранения очередей в БД: {e}")
+
 
 class ReportView(View):
     def __init__(self, match_id, reporter_name, violator_name):
@@ -645,8 +646,10 @@ def update_player_rating(nickname, new_rating, mode):
 async def find_match():
     """Поиск подходящих матчей в очередях"""
     while True:
-        await asyncio.sleep(30)
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Проверка очередей: {[len(q) for q in queues.values()]}")
+        await asyncio.sleep(15)
+        print(
+            f"[{datetime.now().strftime('%H:%M:%S')}] Проверка очередей: {[len(q) for q in queues.values()]}"
+        )
 
         try:
             # Обработка стандартных режимов (1, 2, 3)
@@ -656,12 +659,12 @@ async def find_match():
                     try:
                         queue.sort(key=lambda x: x["join_time"])
                         player1 = queue.pop(0)
-                        min_diff = float('inf')
+                        min_diff = float("inf")
                         candidate = None
                         candidate_idx = None
 
                         for idx, p in enumerate(queue):
-                            diff = abs(player1['rating'] - p['rating'])
+                            diff = abs(player1["rating"] - p["rating"])
                             if diff < min_diff:
                                 min_diff = diff
                                 candidate = p
@@ -680,7 +683,7 @@ async def find_match():
             if queue_any:
                 try:
                     # Поиск в других режимах (1, 2, 3)
-                    min_diff = float('inf')
+                    min_diff = float("inf")
                     candidate = None
                     candidate_mode = None
                     candidate_idx = None
@@ -688,7 +691,7 @@ async def find_match():
                     for mode in [MODES["station5f"], MODES["mots"], MODES["12min"]]:
                         queue = queues[mode]
                         for idx, p in enumerate(queue):
-                            diff = abs(queue_any[0]['rating'] - p['rating'])
+                            diff = abs(queue_any[0]["rating"] - p["rating"])
                             if diff < min_diff:
                                 min_diff = diff
                                 candidate = p
@@ -704,12 +707,12 @@ async def find_match():
                         # Поиск внутри очереди "Any"
                         if len(queue_any) >= 2:
                             player1 = queue_any.pop(0)
-                            min_diff = float('inf')
+                            min_diff = float("inf")
                             candidate = None
                             candidate_idx = None
 
                             for idx, p in enumerate(queue_any):
-                                diff = abs(player1['rating'] - p['rating'])
+                                diff = abs(player1["rating"] - p["rating"])
                                 if diff < min_diff:
                                     min_diff = diff
                                     candidate = p
@@ -717,7 +720,9 @@ async def find_match():
 
                             if candidate_idx is not None:
                                 player2 = queue_any.pop(candidate_idx)
-                                random_mode = random.choice([MODES["station5f"], MODES["mots"], MODES["12min"]])
+                                random_mode = random.choice(
+                                    [MODES["station5f"], MODES["mots"], MODES["12min"]]
+                                )
                                 await create_match(random_mode, player1, player2)
                                 save_queues_to_db()  # Сохраняем после создания матча
                 except Exception as e:
@@ -732,8 +737,10 @@ async def find_match():
 async def create_match(mode, player1, player2):
     """Создает матч и уведомляет игроков"""
     try:
-        print(f"[MATCH] Создание матча: {player1['nickname']} vs {player2['nickname']} ({MODE_NAMES[mode]})")
-        
+        print(
+            f"[MATCH] Создание матча: {player1['nickname']} vs {player2['nickname']} ({MODE_NAMES[mode]})"
+        )
+
         # Обновляем статус в базе
         c = db.cursor()
         c.execute(
@@ -758,7 +765,7 @@ async def create_match(mode, player1, player2):
         try:
             channel = global_bot.get_channel(player1["channel_id"])
             mode_name = MODE_NAMES.get(mode, "Unknown")
-            
+
             embed = discord.Embed(
                 title="🎮 Матч найден!",
                 description=(
@@ -778,19 +785,24 @@ async def create_match(mode, player1, player2):
             try:
                 user = await global_bot.fetch_user(player_data["discord_id"])
                 opponent_user = await global_bot.fetch_user(opponent_data["discord_id"])
-                
+
                 # Форматируем тэг соперника
                 discord_tag = f"{opponent_user.name}#{opponent_user.discriminator}"
-                
+
                 embed = discord.Embed(
-                    title="🎮 Матч найден!", 
-                    color=discord.Color.green()
+                    title="🎮 Матч найден!", color=discord.Color.green()
                 )
                 embed.add_field(name="Режим", value=f"**{mode_name}**", inline=False)
-                embed.add_field(name="Противник", value=f"**{opponent_data['nickname']}**", inline=False)
-                embed.add_field(name="Discord противника", value=discord_tag, inline=False)
+                embed.add_field(
+                    name="Противник",
+                    value=f"**{opponent_data['nickname']}**",
+                    inline=False,
+                )
+                embed.add_field(
+                    name="Discord противника", value=discord_tag, inline=False
+                )
                 embed.set_footer(text=f"Match ID: {match_id}")
-                
+
                 instruction = (
                     "🔍 Найдите вашего противника в Discord и договоритесь о создании игры.\n"
                     f"**Discord противника:** {discord_tag}\n\n"
@@ -799,7 +811,7 @@ async def create_match(mode, player1, player2):
                     "приложив скриншот.\n"
                     "Пример: `!result {match_id} 5-3`"
                 )
-                
+
                 await user.send(embed=embed)
                 await user.send(instruction)
             except Exception as e:
@@ -819,7 +831,7 @@ async def create_match(mode, player1, player2):
                 "mode": mode,
             }
             await send_map_selection(match_id)
-            
+
     except Exception as e:
         print(f"Ошибка создания матча: {e}")
         # Возвращаем игроков в очередь при ошибке
@@ -835,7 +847,7 @@ async def create_match(mode, player1, player2):
 async def periodic_queue_saver():
     """Периодически сохраняет состояние очередей"""
     while True:
-        await asyncio.sleep(300)  # Каждые 5 минут
+        await asyncio.sleep(600)  # Каждые 10 минут
         try:
             save_queues_to_db()
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Автосохранение очередей")
@@ -1292,7 +1304,8 @@ def setup(bot):
             # Проверяем существование матча
             c = matches_db.cursor()
             c.execute(
-                "SELECT player1, player2, mode FROM matches WHERE matchid = ?", (match_id,)
+                "SELECT player1, player2, mode FROM matches WHERE matchid = ?",
+                (match_id,),
             )
             match_data = c.fetchone()
 
@@ -1336,7 +1349,7 @@ def setup(bot):
                 "scores": scores,
                 "screenshot": screenshot,
                 "submitted_by": ctx.author.id,
-                "mode": mode  # Добавлен режим для правильного расчёта ELO
+                "mode": mode,  # Добавлен режим для правильного расчёта ELO
             }
 
             # Отправляем результат на модерацию
