@@ -70,9 +70,9 @@ async def playerinfo(ctx, nickname: str):
     c = db.cursor()
     c.execute(
         """
-    SELECT playerid, playername, discordid, currentelo, 
+    SELECT playerid, playername, currentelo, 
            elo_station5f, elo_mots, elo_12min,
-           wins, losses, ties, currentmatches
+           wins, losses, ties
     FROM players
     WHERE playername = ?
     """,
@@ -82,18 +82,20 @@ async def playerinfo(ctx, nickname: str):
     player = c.fetchone()
 
     if player:
+        # Рассчитываем общее количество матчей
+        total_matches = player[6] + player[7] + player[8]  # wins + losses + ties
+
         player_data = {
             "id": player[0],
             "name": player[1],
-            "discord_id": player[2],
-            "elo": player[3],
-            "elo_station5f": player[4],
-            "elo_mots": player[5],
-            "elo_12min": player[6],
-            "wins": player[7],
-            "losses": player[8],
-            "ties": player[9],
-            "matches": player[10],
+            "elo": player[2],
+            "elo_station5f": player[3],
+            "elo_mots": player[4],
+            "elo_12min": player[5],
+            "wins": player[6],
+            "losses": player[7],
+            "ties": player[8],
+            "matches": total_matches,  # Используем вычисленное значение
         }
 
         embed = discord.Embed(
@@ -101,7 +103,6 @@ async def playerinfo(ctx, nickname: str):
             color=discord.Color.blue(),
         )
         embed.add_field(name="ID", value=player_data["id"], inline=True)
-        embed.add_field(name="Discord ID", value=player_data["discord_id"], inline=True)
         embed.add_field(name="Общий ELO", value=player_data["elo"], inline=True)
         embed.add_field(
             name="ELO Station", value=player_data["elo_station5f"], inline=True

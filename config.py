@@ -11,7 +11,7 @@ VERIFICATION_LOGS_CHANNEL_NAME = "elobot-logs"
 QUEUE_CHANNEL_NAME = "elobot-queue"
 MATCH_RESULTS_CHANNEL_NAME = "elobot-results"
 RESULTS_CHANNEL_NAME = "elobot-logs"
-MODERATOR_ID = 296821040221388801
+MODERATOR_ID = 710147702490660914  # illumi: 710147702490660914 мой: 296821040221388801
 VERIFIED_ROLE_NAME = "verified"
 DEFAULT_ELO = 1000
 
@@ -64,6 +64,27 @@ CREATE TABLE IF NOT EXISTS players (
 )
 """
     )
+    c.execute(
+        """
+    CREATE TRIGGER IF NOT EXISTS update_match_count 
+    AFTER UPDATE OF wins, losses, ties ON players
+    BEGIN
+        UPDATE players 
+        SET currentmatches = NEW.wins + NEW.losses + NEW.ties 
+        WHERE playerid = NEW.playerid;
+    END;
+    """
+    )
+
+    # Добавляем вычисление для существующих записей
+    c.execute(
+        """
+    UPDATE players 
+    SET currentmatches = wins + losses + ties 
+    WHERE currentmatches != wins + losses + ties 
+       OR currentmatches IS NULL;
+    """
+    )
     db.commit()
     return db
 
@@ -113,7 +134,7 @@ intents.members = True
 
 bot = commands.Bot(
     intents=intents,
-    command_prefix="!",
+    command_prefix=".",
 )
 
 # Инициализация баз данных
