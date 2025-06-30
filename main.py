@@ -2,6 +2,7 @@ import logging
 from dotenv import load_dotenv
 import os
 from datetime import datetime
+from role_manager import setup_role_manager
 from nickname_updater import setup_nickname_updater
 from config import (
     bot,
@@ -607,5 +608,6 @@ async def on_disconnect():
 setup_queueing(bot)
 setup_verification(bot)
 setup_nickname_updater(bot)
+setup_role_manager(bot)
 
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
