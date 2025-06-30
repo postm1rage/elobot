@@ -2,6 +2,7 @@ import logging
 from dotenv import load_dotenv
 import os
 from datetime import datetime
+from nickname_updater import setup_nickname_updater
 from config import (
     bot,
     db,
@@ -79,6 +80,7 @@ async def on_ready():
 async def setup_hook():
     """Асинхронный хук для запуска фоновых задач"""
     bot.loop.create_task(find_match())
+    bot.loop.create_task(check_expired_matches(bot))
 
 
 bot.remove_command("help")
@@ -604,5 +606,6 @@ async def on_disconnect():
 # Настройка модулей
 setup_queueing(bot)
 setup_verification(bot)
+setup_nickname_updater(bot)
 
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
