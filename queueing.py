@@ -23,7 +23,562 @@ RESULT_REMINDER = (
 
 # Глобальный словарь для хранения репортов
 pending_reports = {}
+# Глобальные словари для новой системы подтверждения
+pending_player_confirmations = {}  # {match_id: {data}}
+player_confirmation_views = {}    # {message_id: view}
 
+class ModeratorResolutionView(View):
+    def __init__(self, match_id):
+        super().__init__(timeout=None)
+        self.match_id = match_id
+
+    @discord.ui.button(label="Подтвердить", style=discord.ButtonStyle.green)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Получаем данные о результате напрямую из БД
+        c = matches_db.cursor()
+        c.execute(
+            "SELECT player1, player2, mode FROM matches WHERE matchid = ?",
+            (self.match_id,)
+        )
+        match_data = c.fetchone()
+        
+        if not match_data:
+            await interaction.response.send_message("❌ Матч не найден", ephemeral=True)
+            return
+            
+        player1, player2, mode = match_data
+        
+        # Получаем результат из pending_player_confirmations
+        result_data = pending_player_confirmations.get(self.match_id)
+        if not result_data:
+            await interaction.response.send_message("❌ Данные о результате не найдены", ephemeral=True)
+            return
+            
+        scores = result_data["scores"]
+        if not re.match(r"^\d+-\d+$", scores):
+            await interaction.response.send_message("❌ Неверный формат счета", ephemeral=True)
+            return
+            
+        score1, score2 = map(int, scores.split("-"))
+        
+        # Обрабатываем результат
+        await self.process_match_result(player1, player2, mode, score1, score2)
+        
+        # Удаляем из ожидания
+        if self.match_id in pending_player_confirmations:
+            del pending_player_confirmations[self.match_id]
+            
+        await interaction.response.send_message("✅ Результат подтвержден модератором!", ephemeral=True)
+        
+        # Уведомляем игроков
+        await self.notify_players("подтвержден модератором")
+        await interaction.message.delete()
+
+    @discord.ui.button(label="Отклонить", style=discord.ButtonStyle.red)
+    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Возвращаем матч в активное состояние
+        c = matches_db.cursor()
+        c.execute("UPDATE matches SET isover = 0 WHERE matchid = ?", (self.match_id,))
+        matches_db.commit()
+        
+        # Удаляем из ожидания
+        if self.match_id in pending_player_confirmations:
+            # Получаем данные для уведомления отправителя
+            result_data = pending_player_confirmations[self.match_id]
+            submitter_id = result_data["submitter_id"]
+            del pending_player_confirmations[self.match_id]
+            
+            # Уведомляем отправителя
+            try:
+                submitter_user = await global_bot.fetch_user(submitter_id)
+                await submitter_user.send(
+                    f"❌ Результат матча #{self.match_id} отклонен модератором."
+                )
+            except:
+                pass
+            
+        await interaction.response.send_message("✅ Результат отклонен!", ephemeral=True)
+        
+        # Уведомляем игроков
+        await self.notify_players("отклонен модератором")
+        await interaction.message.delete()
+
+    @discord.ui.button(label="Тех. поражение", style=discord.ButtonStyle.gray)
+    async def tech_loss(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Получаем данные о матче
+        c = matches_db.cursor()
+        c.execute(
+            "SELECT mode, player1, player2 FROM matches WHERE matchid = ?",
+            (self.match_id,)
+        )
+        match_data = c.fetchone()
+        
+        if not match_data:
+            await interaction.response.send_message("❌ Матч не найден", ephemeral=True)
+            return
+            
+        mode, player1, player2 = match_data
+        
+        # Получаем информацию о том, кто отправил результат
+        result_data = pending_player_confirmations.get(self.match_id)
+        if not result_data:
+            await interaction.response.send_message("❌ Данные о результате не найдены", ephemeral=True)
+            return
+            
+        winner = result_data["submitter_name"]
+        loser = player2 if winner == player1 else player1
+        
+        # Применяем техническое поражение
+        await self.apply_tech_loss(mode, player1, player2, winner, loser)
+        
+        # Удаляем из ожидания
+        if self.match_id in pending_player_confirmations:
+            del pending_player_confirmations[self.match_id]
+            
+        await interaction.response.send_message("✅ Техническое поражение применено!", ephemeral=True)
+        
+        # Уведомляем игроков
+        await self.notify_players(f"завершен техническим поражением в пользу {winner}")
+        await interaction.message.delete()
+
+    async def process_match_result(self, player1, player2, mode, score1, score2):
+        """Обработка подтвержденного результата"""
+        try:
+            # Определяем победителя
+            if score1 > score2:
+                winner = player1
+                loser = player2
+            else:
+                winner = player2
+                loser = player1
+                
+            # Получаем текущие рейтинги
+            rating_winner = get_player_rating(winner, mode)
+            rating_loser = get_player_rating(loser, mode)
+            
+            # Рассчитываем новые рейтинги
+            new_rating_winner, new_rating_loser = calculate_elo(rating_winner, rating_loser, 1)
+            
+            # Обновляем статистику
+            c = db.cursor()
+            c.execute(
+                "UPDATE players SET wins = wins + 1 WHERE playername = ?", 
+                (winner,)
+            )
+            c.execute(
+                "UPDATE players SET losses = losses + 1 WHERE playername = ?", 
+                (loser,)
+            )
+            
+            # Обновляем ELO
+            update_player_rating(winner, new_rating_winner, mode)
+            update_player_rating(loser, new_rating_loser, mode)
+            
+            # Обновляем запись матча
+            c_matches = matches_db.cursor()
+            c_matches.execute(
+                "UPDATE matches SET player1score = ?, player2score = ?, isover = 1, isverified = 1 WHERE matchid = ?",
+                (score1, score2, self.match_id)
+            )
+            matches_db.commit()
+            db.commit()
+            
+            # Отправляем результат в канал
+            mode_name = MODE_NAMES.get(mode, "Unknown")
+            embed = discord.Embed(
+                title=f"🏁 Матч завершен | ID: {self.match_id}",
+                description=(
+                    f"**Режим:** {mode_name}\n"
+                    f"**Игроки:** {player1} vs {player2}\n"
+                    f"**Счет:** {score1} - {score2}\n"
+                    f"**Победитель:** {winner}\n\n"
+                    f"**Изменения ELO:**\n"
+                    f"{winner}: {rating_winner} → **{new_rating_winner}** (+{new_rating_winner - rating_winner})\n"
+                    f"{loser}: {rating_loser} → **{new_rating_loser}** ({new_rating_loser - rating_loser})"
+                ),
+                color=discord.Color.green()
+            )
+            
+            # Ищем канал результатов
+            results_channel = None
+            for guild in global_bot.guilds:
+                for channel in guild.text_channels:
+                    if channel.name == "elobot-results":
+                        results_channel = channel
+                        break
+                if results_channel:
+                    break
+            
+            if results_channel:
+                await results_channel.send(embed=embed)
+            else:
+                print("⚠ Канал elobot-results не найден")
+
+            # Отправляем результат игрокам в ЛС
+            try:
+                # Получаем discord_id игроков
+                c_db = db.cursor()
+                c_db.execute("SELECT discordid FROM players WHERE playername = ?", (player1,))
+                player1_data = c_db.fetchone()
+                c_db.execute("SELECT discordid FROM players WHERE playername = ?", (player2,))
+                player2_data = c_db.fetchone()
+            except Exception as e:
+                print(f"Ошибка отправки результата игрокам: {e}")
+                
+        except Exception as e:
+            print(f"Ошибка обработки результата: {e}")
+            # Уведомляем модератора об ошибке
+            try:
+                moderator = await global_bot.fetch_user(MODERATOR_ID)
+                await moderator.send(f"❌ Ошибка обработки результата матча #{self.match_id}: {str(e)}")
+            except:
+                pass
+
+    async def apply_tech_loss(self, mode, player1, player2, winner, loser):
+        """Применение технического поражения"""
+        try:
+            # Получаем текущие рейтинги
+            rating_winner = get_player_rating(winner, mode)
+            rating_loser = get_player_rating(loser, mode)
+            
+            # Рассчитываем новые рейтинги (техническая победа)
+            new_rating_winner, new_rating_loser = calculate_elo(rating_winner, rating_loser, 1)
+            
+            # Обновляем статистику
+            c_db = db.cursor()
+            c_db.execute(
+                "UPDATE players SET wins = wins + 1 WHERE playername = ?", 
+                (winner,)
+            )
+            c_db.execute(
+                "UPDATE players SET losses = losses + 1 WHERE playername = ?", 
+                (loser,)
+            )
+            
+            # Обновляем ELO
+            update_player_rating(winner, new_rating_winner, mode)
+            update_player_rating(loser, new_rating_loser, mode)
+            
+            # Обновляем запись матча
+            c_matches = matches_db.cursor()
+            if winner == player1:
+                c_matches.execute(
+                    "UPDATE matches SET player1score = 1, player2score = 0, isover = 1, isverified = 1 WHERE matchid = ?",
+                    (self.match_id,)
+                )
+            else:
+                c_matches.execute(
+                    "UPDATE matches SET player1score = 0, player2score = 1, isover = 1, isverified = 1 WHERE matchid = ?",
+                    (self.match_id,)
+                )
+            matches_db.commit()
+            db.commit()
+            
+            # Отправляем результат в канал
+            mode_name = MODE_NAMES.get(mode, "Unknown")
+            embed = discord.Embed(
+                title=f"⚠️ Матч завершен (тех. поражение) | ID: {self.match_id}",
+                description=(
+                    f"**Режим:** {mode_name}\n"
+                    f"**Игроки:** {player1} vs {player2}\n"
+                    f"**Победитель:** {winner} (техническое поражение)\n\n"
+                    f"**Изменения ELO:**\n"
+                    f"{winner}: {rating_winner} → **{new_rating_winner}** (+{new_rating_winner - rating_winner})\n"
+                    f"{loser}: {rating_loser} → **{new_rating_loser}** ({new_rating_loser - rating_loser})"
+                ),
+                color=discord.Color.red()
+            )
+            
+            # Ищем канал результатов
+            results_channel = None
+            for guild in global_bot.guilds:
+                for channel in guild.text_channels:
+                    if channel.name == "elobot-results":
+                        results_channel = channel
+                        break
+                if results_channel:
+                    break
+            
+            if results_channel:
+                await results_channel.send(embed=embed)
+            else:
+                print("⚠ Канал elobot-results не найден")
+
+            # Отправляем результат игрокам в ЛС
+            try:
+                # Получаем discord_id игроков
+                c_db = db.cursor()
+                c_db.execute("SELECT discordid FROM players WHERE playername = ?", (player1,))
+                player1_data = c_db.fetchone()
+                c_db.execute("SELECT discordid FROM players WHERE playername = ?", (player2,))
+                player2_data = c_db.fetchone()
+
+                if player1_data:
+                    user1 = await global_bot.fetch_user(int(player1_data[0]))
+                    await user1.send(f"ℹ️ Ваш матч #{self.match_id} завершен техническим поражением")
+                    await user1.send(embed=embed)
+                    
+                if player2_data:
+                    user2 = await global_bot.fetch_user(int(player2_data[0]))
+                    await user2.send(f"ℹ️ Ваш матч #{self.match_id} завершен техническим поражением")
+                    await user2.send(embed=embed)
+            except Exception as e:
+                print(f"Ошибка отправки результата игрокам: {e}")
+                
+        except Exception as e:
+            print(f"Ошибка применения тех. поражения: {e}")
+            # Уведомляем модератора об ошибке
+            try:
+                moderator = await global_bot.fetch_user(MODERATOR_ID)
+                await moderator.send(f"❌ Ошибка применения тех. поражения для матча #{self.match_id}: {str(e)}")
+            except:
+                pass
+
+    async def notify_players(self, action):
+        """Уведомление игроков о действии модератора"""
+        # Получаем данные о матче
+        c = matches_db.cursor()
+        c.execute(
+            "SELECT player1, player2 FROM matches WHERE matchid = ?",
+            (self.match_id,)
+        )
+        match_data = c.fetchone()
+        
+        if not match_data:
+            return
+            
+        player1, player2 = match_data
+        
+        # Получаем discord_id игроков
+        c_db = db.cursor()
+        c_db.execute(
+            "SELECT discordid FROM players WHERE playername = ?",
+            (player1,)
+        )
+        player1_data = c_db.fetchone()
+        c_db.execute(
+            "SELECT discordid FROM players WHERE playername = ?",
+            (player2,)
+        )
+        player2_data = c_db.fetchone()
+        
+        # Отправляем уведомления
+        try:
+            if player1_data:
+                user1 = await global_bot.fetch_user(int(player1_data[0]))
+                await user1.send(f"ℹ️ Результат матча #{self.match_id} {action}.")
+                
+            if player2_data:
+                user2 = await global_bot.fetch_user(int(player2_data[0]))
+                await user2.send(f"ℹ️ Результат матча #{self.match_id} {action}.")
+        except Exception as e:
+            print(f"Ошибка уведомления игроков: {e}")
+
+
+class PlayerConfirmationView(View):
+    def __init__(self, match_id, submitter_id, opponent_id):
+        super().__init__(timeout=3600)  # Таймаут 1 час (3600 секунд)
+        self.match_id = match_id
+        self.submitter_id = submitter_id
+        self.opponent_id = opponent_id
+
+    @discord.ui.button(label="Подтвердить", style=discord.ButtonStyle.green)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.opponent_id:
+            await interaction.response.send_message("❌ Это не ваш матч!", ephemeral=True)
+            return
+        
+        # Получаем данные результата
+        result_data = pending_player_confirmations.get(self.match_id)
+        if not result_data:
+            await interaction.response.send_message("❌ Данные о результате устарели", ephemeral=True)
+            return
+        
+        # Удаляем из ожидания
+        if self.match_id in pending_player_confirmations:
+            del pending_player_confirmations[self.match_id]
+        
+        # Обрабатываем результат
+        await self.process_match_result(result_data)
+        await interaction.response.send_message("✅ Результат подтвержден!", ephemeral=True)
+        await interaction.message.delete()
+
+    @discord.ui.button(label="Оспорить", style=discord.ButtonStyle.red)
+    async def dispute(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.opponent_id:
+            await interaction.response.send_message("❌ Это не ваш матч!", ephemeral=True)
+            return
+        
+        # Получаем данные результата
+        result_data = pending_player_confirmations.get(self.match_id)
+        if not result_data:
+            await interaction.response.send_message("❌ Данные о результате устарели", ephemeral=True)
+            return
+        
+        # Отправляем модератору
+        await self.send_to_moderator(result_data)
+        
+        await interaction.response.send_message("✅ Результат оспорен! Модератор рассмотрит спор.", ephemeral=True)
+        await interaction.message.delete()
+
+    async def process_match_result(self, result_data):
+        """Обработка подтвержденного результата"""
+        try:
+            match_id = result_data["match_id"]
+            scores = result_data["scores"]
+            player1 = result_data["player1"]
+            player2 = result_data["player2"]
+            mode = result_data["mode"]
+            
+            # Парсим счет
+            score1, score2 = map(int, scores.split("-"))
+            
+            # Определяем результат
+            if score1 > score2:
+                winner = player1
+                loser = player2
+            else:
+                winner = player2
+                loser = player1
+                
+            # Получаем текущие рейтинги
+            rating_winner = get_player_rating(winner, mode)
+            rating_loser = get_player_rating(loser, mode)
+            
+            # Рассчитываем новые рейтинги
+            new_rating_winner, new_rating_loser = calculate_elo(rating_winner, rating_loser, 1)
+            
+            # Обновляем статистику
+            c = db.cursor()
+            c.execute(
+                "UPDATE players SET wins = wins + 1 WHERE playername = ?", 
+                (winner,)
+            )
+            c.execute(
+                "UPDATE players SET losses = losses + 1 WHERE playername = ?", 
+                (loser,)
+            )
+            
+            # Обновляем ELO
+            update_player_rating(winner, new_rating_winner, mode)
+            update_player_rating(loser, new_rating_loser, mode)
+            
+            # Обновляем запись матча
+            c_matches = matches_db.cursor()
+            c_matches.execute(
+                "UPDATE matches SET player1score = ?, player2score = ?, isover = 1, isverified = 1 WHERE matchid = ?",
+                (score1, score2, match_id)
+            )
+            matches_db.commit()
+            db.commit()
+            
+            # Отправляем результат в канал
+            mode_name = MODE_NAMES.get(mode, "Unknown")
+            embed = discord.Embed(
+                title=f"🏁 Матч завершен | ID: {match_id}",
+                description=(
+                    f"**Режим:** {mode_name}\n"
+                    f"**Игроки:** {player1} vs {player2}\n"
+                    f"**Счет:** {score1} - {score2}\n"
+                    f"**Победитель:** {winner}\n\n"
+                    f"**Изменения ELO:**\n"
+                    f"{winner}: {rating_winner} → **{new_rating_winner}** (+{new_rating_winner - rating_winner})\n"
+                    f"{loser}: {rating_loser} → **{new_rating_loser}** ({new_rating_loser - rating_loser})"
+                ),
+                color=discord.Color.green()
+            )
+            
+            # Ищем канал результатов
+            results_channel = None
+            for guild in global_bot.guilds:
+                for channel in guild.text_channels:
+                    if channel.name == "elobot-results":
+                        results_channel = channel
+                        break
+                if results_channel:
+                    break
+            
+            if results_channel:
+                await results_channel.send(embed=embed)
+            else:
+                print("⚠ Канал elobot-results не найден")
+                
+            # Отправляем результат игрокам в ЛС
+            try:
+                submitter_user = await global_bot.fetch_user(result_data["submitter_id"])
+                opponent_user = await global_bot.fetch_user(result_data["opponent_id"])
+                
+                # Создаем персонализированные сообщения
+                await submitter_user.send(f"✅ Ваш оппонент подтвердил результат матча #{match_id}")
+                await submitter_user.send(embed=embed)
+                
+                await opponent_user.send(f"✅ Вы подтвердили результат матча #{match_id}")
+                await opponent_user.send(embed=embed)
+            except Exception as e:
+                print(f"Ошибка отправки результата игрокам: {e}")
+                
+        except Exception as e:
+            print(f"Ошибка обработки результата: {e}")
+            # Уведомляем модератора об ошибке
+            try:
+                moderator = await global_bot.fetch_user(MODERATOR_ID)
+                await moderator.send(f"❌ Ошибка обработки результата матча #{match_id}: {str(e)}")
+            except:
+                pass
+
+    async def send_to_moderator(self, result_data):
+        """Отправка оспоренного результата модератору"""
+        try:
+            moderator = await global_bot.fetch_user(MODERATOR_ID)
+            
+            embed = discord.Embed(
+                title="⚠️ Оспоренный результат матча",
+                description=(
+                    f"**Match ID:** {result_data['match_id']}\n"
+                    f"**Игроки:** {result_data['player1']} vs {result_data['player2']}\n"
+                    f"**Счет:** {result_data['scores']}\n"
+                    f"**Отправил:** <@{result_data['submitter_id']}>\n"
+                    f"**Оспорил:** <@{result_data['opponent_id']}>"
+                ),
+                color=discord.Color.orange()
+            )
+            
+            if result_data["screenshot"]:
+                embed.set_image(url=result_data["screenshot"])
+                
+            view = ModeratorResolutionView(result_data['match_id'])
+            await moderator.send(embed=embed, view=view)
+            
+        except Exception as e:
+            print(f"Ошибка отправки модератору: {e}")
+
+    async def on_timeout(self):
+        """Отправляем модератору при таймауте (1 час)"""
+        result_data = pending_player_confirmations.get(self.match_id)
+        if result_data:
+            # Уведомляем игроков о таймауте
+            try:
+                submitter_user = await global_bot.fetch_user(result_data["submitter_id"])
+                opponent_user = await global_bot.fetch_user(result_data["opponent_id"])
+                
+                await submitter_user.send(
+                    f"⌛ Ваш оппонент не подтвердил результат матча #{self.match_id} в течение часа. "
+                    f"Результат отправлен модератору на проверку."
+                )
+                await opponent_user.send(
+                    f"⌛ Вы не подтвердили результат матча #{self.match_id} в течение часа. "
+                    f"Результат отправлен модератору на проверку."
+                )
+            except:
+                pass
+            
+            # Отправляем модератору
+            await self.send_to_moderator(result_data)
+        
+        try:
+            await self.message.delete()
+        except:
+            pass
 
 def save_queues_to_db():
     """Сохраняет текущее состояние очередей в БД"""
@@ -538,9 +1093,9 @@ class MapSelectionView(View):
             instruction = (
                 "🔍 Найдите вашего противника в Discord и договоритесь о создании игры.\n"
                 "ℹ️ После завершения матча **победитель** должен отправить результат командой "
-                "`!result <ID_матча> <свой_счет>-<счет_соперника>` в личные сообщения боту, "
+                "`.result <ID_матча> <свой_счет>-<счет_соперника>` в личные сообщения боту, "
                 "приложив скриншот.\n"
-                "Пример: `!result 123 5-3`"
+                "Пример: `.result 123 5-3`"
             )
 
             await player1.send(instruction)
@@ -807,9 +1362,9 @@ async def create_match(mode, player1, player2):
                     "🔍 Найдите вашего противника в Discord и договоритесь о создании игры.\n"
                     f"**Discord противника:** {discord_tag}\n\n"
                     "ℹ️ После завершения матча **победитель** должен отправить результат командой "
-                    "`!result <ID_матча> <свой_счет>-<счет_соперника>` в личные сообщения боту, "
+                    "`.result <ID_матча> <свой_счет>-<счет_соперника>` в личные сообщения боту, "
                     "приложив скриншот.\n"
-                    "Пример: `!result {match_id} 5-3`"
+                    "Пример: `.result {match_id} 5-3`"
                 )
 
                 await user.send(embed=embed)
@@ -1127,7 +1682,7 @@ def setup(bot):
         if active_match:
             await ctx.send(
                 f"❌ У вас есть активный матч (ID: {active_match[0]}). "
-                "Завершите его или сдайтесь командой !giveup перед поиском новой игры."
+                "Завершите его или сдайтесь командой .giveup перед поиском новой игры."
             )
             return
         # --- КОНЕЦ ПРОВЕРКИ АКТИВНЫХ МАТЧЕЙ ---
@@ -1261,126 +1816,129 @@ def setup(bot):
 
         await ctx.send(embed=embed)
 
-        @bot.command()
-        async def result(ctx, match_id: int, scores: str):
-            """Отправка результата матча с приложенным скриншотом"""
-            # Проверяем, что команда вызвана в ЛС
-            if not isinstance(ctx.channel, discord.DMChannel):
-                await ctx.send(
-                    "❌ Эта команда доступна только в личных сообщениях с ботом."
-                )
-                return
+    @bot.command()
+    async def result(ctx, match_id: int, scores: str):
+        """Отправка результата матча с приложенным скриншотом"""
+        # Проверяем, что команда вызвана в ЛС
+        if not isinstance(ctx.channel, discord.DMChannel):
+            await ctx.send("❌ Эта команда доступна только в личных сообщениях с ботом.")
+            return
 
-            if match_id in pending_reports:
-                await ctx.send(
-                    "❌ Нельзя отправить результат: по этому матчу есть активный репорт."
-                )
-                return
+        if match_id in pending_reports:
+            await ctx.send("❌ Нельзя отправить результат: по этому матчу есть активный репорт.")
+            return
 
-            # Проверяем формат счета
-            if not re.match(r"^\d+-\d+$", scores):
-                await ctx.send(
-                    "❌ Неверный формат счета. Используйте: `!result <ID матча> <счет-игрока1>-<счет-игрока2>`"
-                )
-                return
+        # Проверяем формат счета
+        if not re.match(r"^\d+-\d+$", scores):
+            await ctx.send("❌ Неверный формат счета. Используйте: `.result <ID матча> <счет-игрока1>-<счет-игрока2>`")
+            return
 
-            # Проверяем равенство счета
-            score1, score2 = map(int, scores.split("-"))
-            if score1 == score2:
-                await ctx.send(
-                    "❌ Счет не может быть равным! Матч должен иметь победителя."
-                )
-                return
+        # Проверяем равенство счета
+        score1, score2 = map(int, scores.split("-"))
+        if score1 == score2:
+            await ctx.send("❌ Счет не может быть равным! Матч должен иметь победителя.")
+            return
 
-            # Проверяем наличие скриншота
-            if not ctx.message.attachments:
-                await ctx.send(
-                    "❌ Пожалуйста, прикрепите скриншот с результатом матча."
-                )
-                return
+        # Проверяем наличие скриншота
+        if not ctx.message.attachments:
+            await ctx.send("❌ Пожалуйста, прикрепите скриншот с результатом матча.")
+            return
 
-            screenshot = ctx.message.attachments[0].url
+        screenshot = ctx.message.attachments[0].url
 
-            # Проверяем существование матча
-            c = matches_db.cursor()
-            c.execute(
-                "SELECT player1, player2, mode FROM matches WHERE matchid = ?",
-                (match_id,),
+        # Проверяем существование матча
+        c = matches_db.cursor()
+        c.execute(
+            "SELECT player1, player2, mode FROM matches WHERE matchid = ?",
+            (match_id,),
+        )
+        match_data = c.fetchone()
+
+        if not match_data:
+            await ctx.send("❌ Матч с указанным ID не найден.")
+            return
+
+        player1, player2, mode = match_data
+
+        # Проверяем, что игрок участвует в матче
+        c_db = db.cursor()
+        c_db.execute(
+            "SELECT playername FROM players WHERE discordid = ?",
+            (str(ctx.author.id),),
+        )
+        player_data = c_db.fetchone()
+
+        if not player_data:
+            await ctx.send("❌ Вы не зарегистрированы в системе.")
+            return
+
+        submitter_name = player_data[0]
+
+        if submitter_name not in [player1, player2]:
+            await ctx.send("❌ Вы не участвуете в этом матче.")
+            return
+
+        # Определяем оппонента
+        opponent_name = player2 if submitter_name == player1 else player1
+
+        # Получаем discord_id оппонента
+        c_db.execute(
+            "SELECT discordid FROM players WHERE playername = ?",
+            (opponent_name,),
+        )
+        opponent_data = c_db.fetchone()
+        
+        if not opponent_data:
+            await ctx.send("❌ Не удалось найти оппонента в системе")
+            return
+            
+        opponent_id = int(opponent_data[0])
+
+        # Сохраняем результат для подтверждения оппонентом
+        pending_player_confirmations[match_id] = {
+            "match_id": match_id,
+            "player1": player1,
+            "player2": player2,
+            "scores": scores,
+            "screenshot": screenshot,
+            "submitter_id": ctx.author.id,
+            "submitter_name": submitter_name,
+            "opponent_id": opponent_id,
+            "opponent_name": opponent_name,
+            "mode": mode,
+            "timestamp": datetime.now()
+        }
+
+        # Отправляем запрос подтверждения оппоненту
+        try:
+            opponent_user = await global_bot.fetch_user(opponent_id)
+            
+            embed = discord.Embed(
+                title="🔔 Требуется подтверждение результата",
+                description=(
+                    f"Ваш противник отправил результат матча #{match_id}\n"
+                    f"**Счет:** {scores}\n\n"
+                    f"Пожалуйста, подтвердите результат если он верен, "
+                    f"или оспорьте если есть расхождения."
+                ),
+                color=discord.Color.orange()
             )
-            match_data = c.fetchone()
-
-            if not match_data:
-                await ctx.send("❌ Матч с указанным ID не найден.")
-                return
-
-            player1, player2, mode = match_data
-
-            # Определяем предполагаемого победителя по счету
-            if score1 > score2:
-                presumed_winner = player1
-            else:
-                presumed_winner = player2
-
-            # Проверяем, что команду вызвал победитель
-            c_db = db.cursor()
-            c_db.execute(
-                "SELECT playername FROM players WHERE discordid = ?",
-                (str(ctx.author.id),),
-            )
-            player_data = c_db.fetchone()
-
-            if not player_data:
-                await ctx.send("❌ Вы не зарегистрированы в системе.")
-                return
-
-            submitter_name = player_data[0]
-
-            if submitter_name != presumed_winner:
-                await ctx.send(
-                    f"❌ Результат должен отправлять победитель матча ({presumed_winner})!"
-                )
-                return
-
-            # Сохраняем результат в словарь для модерации
-            pending_results[ctx.message.id] = {
-                "match_id": match_id,
-                "player1": player1,
-                "player2": player2,
-                "scores": scores,
-                "screenshot": screenshot,
-                "submitted_by": ctx.author.id,
-                "mode": mode,  # Добавлен режим для правильного расчёта ELO
-            }
-
-            # Отправляем результат на модерацию
-            try:
-                moderator = await global_bot.fetch_user(MODERATOR_ID)
-                # Создаем embed
-                embed = discord.Embed(
-                    title="🆕 Новый результат матча",
-                    description=f"Требуется проверка модератора",
-                    color=discord.Color.orange(),
-                )
-                embed.add_field(name="Match ID", value=str(match_id), inline=False)
-                embed.add_field(
-                    name="Игроки", value=f"{player1} vs {player2}", inline=False
-                )
-                embed.add_field(name="Счет", value=scores, inline=False)
-                embed.add_field(
-                    name="Отправил", value=f"<@{ctx.author.id}>", inline=False
-                )
+            
+            if screenshot:
                 embed.set_image(url=screenshot)
-
-                # Создаем View для подтверждения
-                view = ConfirmMatchView(match_id, bot, ctx.message.id)
-                await moderator.send(embed=embed, view=view)
-
-                await ctx.send("✅ Результат отправлен на проверку модератору.")
-            except Exception as e:
-                print(f"Ошибка при отправке модератору: {e}")
-                await ctx.send(
-                    "❌ Не удалось отправить результат модератору. Обратитесь к администратору."
-                )
+            
+            # Обновляем информацию о времени (1 час)
+            embed.set_footer(text="У вас есть 1 час на подтверждение")
+                
+            view = PlayerConfirmationView(match_id, ctx.author.id, opponent_id)
+            msg = await opponent_user.send(embed=embed, view=view)
+            view.message = msg
+            
+            await ctx.send("✅ Результат отправлен вашему оппоненту на подтверждение!")
+            
+        except Exception as e:
+            print(f"Ошибка отправки подтверждения: {e}")
+            await ctx.send("❌ Не удалось отправить запрос подтверждения оппоненту. Обратитесь к администратору.")
 
     @bot.command()
     async def giveup(ctx):
