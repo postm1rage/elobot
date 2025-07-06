@@ -1,13 +1,12 @@
 import discord
 from discord.ui import View, Button, Select
 from config import (
-    db,
-    matches_db,
     MODES,
     MODE_NAMES,
     MAPS,
     MODERATOR_ID,
 )
+from db_manager import db_manager
 import asyncio
 import sqlite3
 from datetime import datetime, timedelta
@@ -35,12 +34,11 @@ class ModeratorResolutionView(View):
     @discord.ui.button(label="Подтвердить", style=discord.ButtonStyle.green)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         # Получаем данные о результате напрямую из БД
-        c = matches_db.cursor()
-        c.execute(
+        match_data = db_manager.execute(
+            'matches',
             "SELECT player1, player2, mode FROM matches WHERE matchid = ?",
             (self.match_id,)
-        )
-        match_data = c.fetchone()
+        ).fetchone()
         
         if not match_data:
             await interaction.response.send_message("❌ Матч не найден", ephemeral=True)
@@ -77,10 +75,11 @@ class ModeratorResolutionView(View):
     @discord.ui.button(label="Отклонить", style=discord.ButtonStyle.red)
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
         # Возвращаем матч в активное состояние
-        c = matches_db.cursor()
-        c.execute("UPDATE matches SET isover = 0 WHERE matchid = ?", (self.match_id,))
-        matches_db.commit()
-        
+        db_manager.execute(
+            'matches',
+            "UPDATE matches SET isover = 0 WHERE matchid = ?", 
+            (self.match_id,)
+        )
         # Удаляем из ожидания
         if self.match_id in pending_player_confirmations:
             # Получаем данные для уведомления отправителя
@@ -106,12 +105,11 @@ class ModeratorResolutionView(View):
     @discord.ui.button(label="Тех. поражение", style=discord.ButtonStyle.gray)
     async def tech_loss(self, interaction: discord.Interaction, button: discord.ui.Button):
         # Получаем данные о матче
-        c = matches_db.cursor()
-        c.execute(
+        match_data = db_manager.execute(
+            'matches',
             "SELECT mode, player1, player2 FROM matches WHERE matchid = ?",
             (self.match_id,)
-        )
-        match_data = c.fetchone()
+        ).fetchone()
         
         if not match_data:
             await interaction.response.send_message("❌ Матч не найден", ephemeral=True)
@@ -160,12 +158,13 @@ class ModeratorResolutionView(View):
             new_rating_winner, new_rating_loser = calculate_elo(rating_winner, rating_loser, 1)
             
             # Обновляем статистику
-            c = db.cursor()
-            c.execute(
+            db_manager.execute(
+                'players',
                 "UPDATE players SET wins = wins + 1 WHERE playername = ?", 
                 (winner,)
             )
-            c.execute(
+            db_manager.execute(
+                'players',
                 "UPDATE players SET losses = losses + 1 WHERE playername = ?", 
                 (loser,)
             )
@@ -175,14 +174,11 @@ class ModeratorResolutionView(View):
             update_player_rating(loser, new_rating_loser, mode)
             
             # Обновляем запись матча
-            c_matches = matches_db.cursor()
-            c_matches.execute(
+            db_manager.execute(
+                'matches',
                 "UPDATE matches SET player1score = ?, player2score = ?, isover = 1, isverified = 1 WHERE matchid = ?",
                 (score1, score2, self.match_id)
             )
-            matches_db.commit()
-            db.commit()
-            
             # Отправляем результат в канал
             mode_name = MODE_NAMES.get(mode, "Unknown")
             embed = discord.Embed(
@@ -217,11 +213,16 @@ class ModeratorResolutionView(View):
             # Отправляем результат игрокам в ЛС
             try:
                 # Получаем discord_id игроков
-                c_db = db.cursor()
-                c_db.execute("SELECT discordid FROM players WHERE playername = ?", (player1,))
-                player1_data = c_db.fetchone()
-                c_db.execute("SELECT discordid FROM players WHERE playername = ?", (player2,))
-                player2_data = c_db.fetchone()
+                player1_data = db_manager.execute(
+                    'players',
+                    "SELECT discordid FROM players WHERE playername = ?", 
+                    (player1,)
+                ).fetchone()
+                player2_data = db_manager.execute(
+                    'players',
+                    "SELECT discordid FROM players WHERE playername = ?", 
+                    (player2,)
+                ).fetchone()
             except Exception as e:
                 print(f"Ошибка отправки результата игрокам: {e}")
                 
@@ -245,12 +246,13 @@ class ModeratorResolutionView(View):
             new_rating_winner, new_rating_loser = calculate_elo(rating_winner, rating_loser, 1)
             
             # Обновляем статистику
-            c_db = db.cursor()
-            c_db.execute(
+            db_manager.execute(
+                'players',
                 "UPDATE players SET wins = wins + 1 WHERE playername = ?", 
                 (winner,)
             )
-            c_db.execute(
+            db_manager.execute(
+                'players',
                 "UPDATE players SET losses = losses + 1 WHERE playername = ?", 
                 (loser,)
             )
@@ -260,19 +262,18 @@ class ModeratorResolutionView(View):
             update_player_rating(loser, new_rating_loser, mode)
             
             # Обновляем запись матча
-            c_matches = matches_db.cursor()
             if winner == player1:
-                c_matches.execute(
+                db_manager.execute(
+                    'matches',
                     "UPDATE matches SET player1score = 1, player2score = 0, isover = 1, isverified = 1 WHERE matchid = ?",
                     (self.match_id,)
                 )
             else:
-                c_matches.execute(
+                db_manager.execute(
+                    'matches',
                     "UPDATE matches SET player1score = 0, player2score = 1, isover = 1, isverified = 1 WHERE matchid = ?",
                     (self.match_id,)
                 )
-            matches_db.commit()
-            db.commit()
             
             # Отправляем результат в канал
             mode_name = MODE_NAMES.get(mode, "Unknown")
@@ -307,11 +308,16 @@ class ModeratorResolutionView(View):
             # Отправляем результат игрокам в ЛС
             try:
                 # Получаем discord_id игроков
-                c_db = db.cursor()
-                c_db.execute("SELECT discordid FROM players WHERE playername = ?", (player1,))
-                player1_data = c_db.fetchone()
-                c_db.execute("SELECT discordid FROM players WHERE playername = ?", (player2,))
-                player2_data = c_db.fetchone()
+                player1_data = db_manager.execute(
+                    'players',
+                    "SELECT discordid FROM players WHERE playername = ?", 
+                    (player1,)
+                ).fetchone()
+                player2_data = db_manager.execute(
+                    'players',
+                    "SELECT discordid FROM players WHERE playername = ?", 
+                    (player2,)
+                ).fetchone()
 
                 if player1_data:
                     user1 = await global_bot.fetch_user(int(player1_data[0]))
@@ -337,12 +343,11 @@ class ModeratorResolutionView(View):
     async def notify_players(self, action):
         """Уведомление игроков о действии модератора"""
         # Получаем данные о матче
-        c = matches_db.cursor()
-        c.execute(
+        match_data = db_manager.execute(
+            'matches',
             "SELECT player1, player2 FROM matches WHERE matchid = ?",
             (self.match_id,)
-        )
-        match_data = c.fetchone()
+        ).fetchone()
         
         if not match_data:
             return
@@ -350,17 +355,16 @@ class ModeratorResolutionView(View):
         player1, player2 = match_data
         
         # Получаем discord_id игроков
-        c_db = db.cursor()
-        c_db.execute(
+        player1_data = db_manager.execute(
+            'players',
             "SELECT discordid FROM players WHERE playername = ?",
             (player1,)
-        )
-        player1_data = c_db.fetchone()
-        c_db.execute(
+        ).fetchone()
+        player2_data = db_manager.execute(
+            'players',
             "SELECT discordid FROM players WHERE playername = ?",
             (player2,)
-        )
-        player2_data = c_db.fetchone()
+        ).fetchone()
         
         # Отправляем уведомления
         try:
@@ -449,12 +453,13 @@ class PlayerConfirmationView(View):
             new_rating_winner, new_rating_loser = calculate_elo(rating_winner, rating_loser, 1)
             
             # Обновляем статистику
-            c = db.cursor()
-            c.execute(
+            db_manager.execute(
+                'players',
                 "UPDATE players SET wins = wins + 1 WHERE playername = ?", 
                 (winner,)
             )
-            c.execute(
+            db_manager.execute(
+                'players',
                 "UPDATE players SET losses = losses + 1 WHERE playername = ?", 
                 (loser,)
             )
@@ -464,13 +469,11 @@ class PlayerConfirmationView(View):
             update_player_rating(loser, new_rating_loser, mode)
             
             # Обновляем запись матча
-            c_matches = matches_db.cursor()
-            c_matches.execute(
+            db_manager.execute(
+                'matches',
                 "UPDATE matches SET player1score = ?, player2score = ?, isover = 1, isverified = 1 WHERE matchid = ?",
                 (score1, score2, match_id)
             )
-            matches_db.commit()
-            db.commit()
             
             # Отправляем результат в канал
             mode_name = MODE_NAMES.get(mode, "Unknown")
@@ -583,18 +586,17 @@ class PlayerConfirmationView(View):
 def save_queues_to_db():
     """Сохраняет текущее состояние очередей в БД"""
     try:
-        c = db.cursor()
         # Сначала сбрасываем все флаги
-        c.execute("UPDATE players SET in_queue = 0")
+        db_manager.execute('players', "UPDATE players SET in_queue = 0")
 
         # Устанавливаем флаги для игроков в очередях
         for mode, queue in queues.items():
             for player in queue:
-                c.execute(
+                db_manager.execute(
+                    'players',
                     "UPDATE players SET in_queue = 1 WHERE discordid = ?",
                     (str(player["discord_id"]),),
                 )
-        db.commit()
     except Exception as e:
         print(f"Ошибка сохранения очередей в БД: {e}")
 
@@ -611,16 +613,15 @@ class ReportView(View):
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
         # Получаем данные матча
-        c = matches_db.cursor()
-        c.execute(
+        match_data = db_manager.execute(
+            'matches',
             """
             SELECT mode, player1, player2, isverified, player1score, player2score 
             FROM matches 
             WHERE matchid = ?
-        """,
+            """,
             (self.match_id,),
-        )
-        match_data = c.fetchone()
+        ).fetchone()
 
         if not match_data:
             await interaction.response.send_message("❌ Матч не найден", ephemeral=True)
@@ -639,15 +640,16 @@ class ReportView(View):
                 loser_old = player1
 
             # Откатываем статистику
-            c_db = db.cursor()
-            c_db.execute(
-                "UPDATE players SET wins = wins - 1 WHERE playername = ?", (winner_old,)
+            db_manager.execute(
+                'players',
+                "UPDATE players SET wins = wins - 1 WHERE playername = ?", 
+                (winner_old,)
             )
-            c_db.execute(
+            db_manager.execute(
+                'players',
                 "UPDATE players SET losses = losses - 1 WHERE playername = ?",
                 (loser_old,),
             )
-            db.commit()
 
             # Откатываем ELO (сохраняем для отчета)
             old_winner_rating = get_player_rating(winner_old, mode)
@@ -675,29 +677,31 @@ class ReportView(View):
         )
 
         # Обновляем статистику
-        c_db = db.cursor()
-        c_db.execute(
-            "UPDATE players SET wins = wins + 1 WHERE playername = ?", (winner,)
+        db_manager.execute(
+            'players',
+            "UPDATE players SET wins = wins + 1 WHERE playername = ?", 
+            (winner,)
         )
-        c_db.execute(
-            "UPDATE players SET losses = losses + 1 WHERE playername = ?", (loser,)
+        db_manager.execute(
+            'players',
+            "UPDATE players SET losses = losses + 1 WHERE playername = ?", 
+            (loser,)
         )
-        db.commit()
 
         # Обновляем ELO
         update_player_rating(winner, new_winner_rating, mode)
         update_player_rating(loser, new_loser_rating, mode)
 
         # Обновляем матч
-        c.execute(
+        db_manager.execute(
+            'matches',
             """
             UPDATE matches 
             SET player1score = ?, player2score = ?, isover = 1, isverified = 1 
             WHERE matchid = ?
-        """,
+            """,
             (new_p1_score, new_p2_score, self.match_id),
         )
-        matches_db.commit()
 
         # Отправляем результат в канал
         moderator_name = f"{interaction.user.name}#{interaction.user.discriminator}"
@@ -715,11 +719,11 @@ class ReportView(View):
         # Уведомляем игроков
         try:
             # Получаем discord_id игроков
-            c_db = db.cursor()
-            c_db.execute(
-                "SELECT discordid FROM players WHERE playername = ?", (winner,)
-            )
-            winner_row = c_db.fetchone()
+            winner_row = db_manager.execute(
+                'players',
+                "SELECT discordid FROM players WHERE playername = ?", 
+                (winner,)
+            ).fetchone()
             if winner_row:
                 winner_id = int(winner_row[0])
                 winner_user = await global_bot.fetch_user(winner_id)
@@ -728,8 +732,11 @@ class ReportView(View):
                     f"Противнику назначено техническое поражение."
                 )
 
-            c_db.execute("SELECT discordid FROM players WHERE playername = ?", (loser,))
-            loser_row = c_db.fetchone()
+            loser_row = db_manager.execute(
+                'players',
+                "SELECT discordid FROM players WHERE playername = ?", 
+                (loser,)
+            ).fetchone()
             if loser_row:
                 loser_id = int(loser_row[0])
                 loser_user = await global_bot.fetch_user(loser_id)
@@ -754,9 +761,11 @@ class ReportView(View):
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
         # Возвращаем матч в предыдущее состояние
-        c = matches_db.cursor()
-        c.execute("UPDATE matches SET isover = 0 WHERE matchid = ?", (self.match_id,))
-        matches_db.commit()
+        db_manager.execute(
+            'matches',
+            "UPDATE matches SET isover = 0 WHERE matchid = ?", 
+            (self.match_id,)
+        )
 
         # Уведомляем репортера
         try:
@@ -844,12 +853,11 @@ pending_results = (
 
 
 def get_discord_id_by_nickname(nickname):
-    c = db.cursor()
-    c.execute(
+    result = db_manager.execute(
+        'players',
         "SELECT discordid FROM players WHERE playername = ?",
         (nickname,),
-    )
-    result = c.fetchone()
+    ).fetchone()
     return int(result[0]) if result else None
 
 
@@ -1027,12 +1035,11 @@ class MapSelectionView(View):
         )
 
         # Сохраняем выбранную карту в базе данных
-        c = matches_db.cursor()
-        c.execute(
+        db_manager.execute(
+            'matches',
             "UPDATE matches SET map = ? WHERE matchid = ?",
             (selected_map, self.match_id),
         )
-        matches_db.commit()
 
         # Отправляем результат обоим игрокам
         for player_id in voting["players"]:
@@ -1048,13 +1055,12 @@ class MapSelectionView(View):
             else:
                 # Если нет в словаре, попробуем получить из БД
                 try:
-                    c_db = db.cursor()
                     # Исправленная строка: правильный синтаксис параметра
-                    c_db.execute(
+                    player_data = db_manager.execute(
+                        'players',
                         "SELECT playername FROM players WHERE discordid = ?",
                         (str(opponent_id),),  # <-- Запятая внутри кортежа
-                    )
-                    player_data = c_db.fetchone()
+                    ).fetchone()
                     opponent_nickname = (
                         player_data[0] if player_data else "Неизвестный игрок"
                     )
@@ -1151,51 +1157,65 @@ def calculate_elo(player1_rating, player2_rating, result, K=40, C=400, max_ratin
 
 
 def get_player_rating(nickname, mode):
-    c = db.cursor()
     if mode == MODES["station5f"]:
-        c.execute("SELECT elo_station5f FROM players WHERE playername = ?", (nickname,))
+        rating = db_manager.execute(
+            'players',
+            "SELECT elo_station5f FROM players WHERE playername = ?", 
+            (nickname,)
+        ).fetchone()
     elif mode == MODES["mots"]:
-        c.execute("SELECT elo_mots FROM players WHERE playername = ?", (nickname,))
+        rating = db_manager.execute(
+            'players',
+            "SELECT elo_mots FROM players WHERE playername = ?", 
+            (nickname,)
+        ).fetchone()
     elif mode == MODES["12min"]:
-        c.execute("SELECT elo_12min FROM players WHERE playername = ?", (nickname,))
+        rating = db_manager.execute(
+            'players',
+            "SELECT elo_12min FROM players WHERE playername = ?", 
+            (nickname,)
+        ).fetchone()
     else:
-        c.execute("SELECT currentelo FROM players WHERE playername = ?", (nickname,))
+        rating = db_manager.execute(
+            'players',
+            "SELECT currentelo FROM players WHERE playername = ?", 
+            (nickname,)
+        ).fetchone()
 
-    rating = c.fetchone()
     return rating[0] if rating else 1000
 
 
 def update_player_rating(nickname, new_rating, mode):
-    c = db.cursor()
-
     # Обновляем ELO для конкретного режима
     if mode == MODES["station5f"]:
-        c.execute(
+        db_manager.execute(
+            'players',
             "UPDATE players SET elo_station5f = ? WHERE playername = ?",
             (new_rating, nickname),
         )
     elif mode == MODES["mots"]:
-        c.execute(
+        db_manager.execute(
+            'players',
             "UPDATE players SET elo_mots = ? WHERE playername = ?",
             (new_rating, nickname),
         )
     elif mode == MODES["12min"]:
-        c.execute(
+        db_manager.execute(
+            'players',
             "UPDATE players SET elo_12min = ? WHERE playername = ?",
             (new_rating, nickname),
         )
 
     # Обновляем суммарный ELO
-    c.execute(
+    db_manager.execute(
+        'players',
         """
-    UPDATE players 
-    SET currentelo = elo_station5f + elo_mots + elo_12min 
-    WHERE playername = ?
-    """,
+        UPDATE players 
+        SET currentelo = elo_station5f + elo_mots + elo_12min 
+        WHERE playername = ?
+        """,
         (nickname,),
     )
-
-    db.commit()
 
 
 async def find_match():
@@ -1297,24 +1317,22 @@ async def create_match(mode, player1, player2):
         )
 
         # Обновляем статус в базе
-        c = db.cursor()
-        c.execute(
+        db_manager.execute(
+            'players',
             "UPDATE players SET in_queue = 0 WHERE playername IN (?, ?)",
             (player1["nickname"], player2["nickname"]),
         )
-        db.commit()
 
-        # Создаем запись о матче
-        c = matches_db.cursor()
-        c.execute(
+        # Создаем запись о матче и получаем ID
+        cursor = db_manager.execute(
+            'matches',
             """
             INSERT INTO matches (mode, player1, player2, start_time)
             VALUES (?, ?, ?, ?)
             """,
             (mode, player1["nickname"], player2["nickname"], datetime.now()),
         )
-        matches_db.commit()
-        match_id = c.lastrowid
+        match_id = cursor.lastrowid
 
         # Уведомляем в канале очереди
         try:
@@ -1427,12 +1445,11 @@ async def check_expired_matches(bot):
                 f"[{now.strftime('%H:%M:%S')}] Проверка матчей старше {one_hour_ago.strftime('%H:%M:%S')}"
             )
 
-            c = matches_db.cursor()
-            c.execute(
+            expired_matches = db_manager.execute(
+                'matches',
                 "SELECT matchid, mode, player1, player2, start_time FROM matches WHERE isover = 0 AND start_time < ?",
                 (one_hour_ago,),
-            )
-            expired_matches = c.fetchall()
+            ).fetchall()
 
             print(f"Найдено {len(expired_matches)} просроченных матчей")
 
@@ -1443,11 +1460,11 @@ async def check_expired_matches(bot):
                 )
 
                 # Двойная проверка статуса матча
-                c_check = matches_db.cursor()
-                c_check.execute(
-                    "SELECT isover FROM matches WHERE matchid = ?", (match_id,)
-                )
-                match_status = c_check.fetchone()
+                match_status = db_manager.execute(
+                    'matches',
+                    "SELECT isover FROM matches WHERE matchid = ?", 
+                    (match_id,)
+                ).fetchone()
 
                 if match_status and match_status[0] == 1:
                     print(f"Матч {match_id} уже завершен, пропускаем")
@@ -1456,12 +1473,11 @@ async def check_expired_matches(bot):
                 print(f"Матч {match_id} просрочен, завершаем автоматически")
 
                 # Обновляем матч как ничью
-                c_update = matches_db.cursor()
-                c_update.execute(
+                db_manager.execute(
+                    'matches',
                     "UPDATE matches SET player1score = 0, player2score = 0, isover = 1, isverified = 1 WHERE matchid = ?",
                     (match_id,),
                 )
-                matches_db.commit()
                 print(f"Матч {match_id} помечен как завершенный (ничья)")
 
                 # Обновляем статистику игроков
@@ -1476,40 +1492,45 @@ async def check_expired_matches(bot):
                     update_player_rating(player2_name, new_rating2, mode)
 
                     # Обновляем счетчики ничьих
-                    c_db = db.cursor()
                     if mode == MODES["station5f"]:
-                        c_db.execute(
+                        db_manager.execute(
+                            'players',
                             "UPDATE players SET ties_station5f = ties_station5f + 1 WHERE playername = ?",
                             (player1_name,),
                         )
-                        c_db.execute(
+                        db_manager.execute(
+                            'players',
                             "UPDATE players SET ties_station5f = ties_station5f + 1 WHERE playername = ?",
                             (player2_name,),
                         )
                     elif mode == MODES["mots"]:
-                        c_db.execute(
+                        db_manager.execute(
+                            'players',
                             "UPDATE players SET ties_mots = ties_mots + 1 WHERE playername = ?",
                             (player1_name,),
                         )
-                        c_db.execute(
+                        db_manager.execute(
+                            'players',
                             "UPDATE players SET ties_mots = ties_mots + 1 WHERE playername = ?",
                             (player2_name,),
                         )
                     elif mode == MODES["12min"]:
-                        c_db.execute(
+                        db_manager.execute(
+                            'players',
                             "UPDATE players SET ties_12min = ties_12min + 1 WHERE playername = ?",
                             (player1_name,),
                         )
-                        c_db.execute(
+                        db_manager.execute(
+                            'players',
                             "UPDATE players SET ties_12min = ties_12min + 1 WHERE playername = ?",
                             (player2_name,),
                         )
 
-                    c_db.execute(
+                    db_manager.execute(
+                        'players',
                         "UPDATE players SET ties = ties + 1 WHERE playername IN (?, ?)",
                         (player1_name, player2_name),
                     )
-                    db.commit()
                     print("Статистика игроков обновлена")
                 except Exception as e:
                     print(f"Ошибка при обновлении статистики: {e}")
@@ -1641,24 +1662,22 @@ def setup(bot):
         if ctx.channel.name != "elobot-queue":
             return
 
-        c = db.cursor()
-        c.execute(
+        player_data = db_manager.execute(
+            'players',
             "SELECT playername, in_queue FROM players WHERE discordid = ?",
             (str(ctx.author.id),),
-        )
-        player_data = c.fetchone()
+        ).fetchone()
 
         if not player_data:
             await ctx.send("❌ Требуется верификация для поиска игры")
             return
 
         # Получаем информацию об игроке
-        c = db.cursor()
-        c.execute(
+        player_data = db_manager.execute(
+            'players',
             "SELECT playername, in_queue FROM players WHERE discordid = ?",
             (str(ctx.author.id),),
-        )
-        player_data = c.fetchone()
+        ).fetchone()
 
         if not player_data:
             await ctx.send("❌ Вы не зарегистрированы в системе")
@@ -1667,8 +1686,8 @@ def setup(bot):
         nickname, in_queue = player_data
 
         # +++ ПРОВЕРКА АКТИВНЫХ МАТЧЕЙ +++
-        c_matches = matches_db.cursor()
-        c_matches.execute(
+        active_match = db_manager.execute(
+            'matches',
             """
             SELECT matchid 
             FROM matches 
@@ -1676,8 +1695,7 @@ def setup(bot):
             AND isover = 0
             """,
             (nickname, nickname),
-        )
-        active_match = c_matches.fetchone()
+        ).fetchone()
 
         if active_match:
             await ctx.send(
@@ -1715,10 +1733,11 @@ def setup(bot):
         )
         save_queues_to_db()
 
-        c.execute(
-            "UPDATE players SET in_queue = 1 WHERE discordid = ?", (str(ctx.author.id),)
+        db_manager.execute(
+            'players',
+            "UPDATE players SET in_queue = 1 WHERE discordid = ?", 
+            (str(ctx.author.id),)
         )
-        db.commit()
 
         await msg.edit(
             content=f"🔍 Поиск игры в режиме {MODE_NAMES[view.selected_mode]}...",
@@ -1730,12 +1749,11 @@ def setup(bot):
         if ctx.channel.name != "elobot-queue":
             return
 
-        c = db.cursor()
-        c.execute(
+        player_data = db_manager.execute(
+            'players',
             "SELECT playername, in_queue FROM players WHERE discordid = ?",
             (str(ctx.author.id),),
-        )
-        player_data = c.fetchone()
+        ).fetchone()
 
         if not player_data or player_data[1] == 0:
             await ctx.send("❌ Вы не в очереди")
@@ -1746,10 +1764,11 @@ def setup(bot):
             queues[mode] = [p for p in queue if p["discord_id"] != ctx.author.id]
         save_queues_to_db()
 
-        c.execute(
-            "UPDATE players SET in_queue = 0 WHERE discordid = ?", (str(ctx.author.id),)
+        db_manager.execute(
+            'players',
+            "UPDATE players SET in_queue = 0 WHERE discordid = ?", 
+            (str(ctx.author.id),)
         )
-        db.commit()
         await ctx.send("✅ Вы вышли из очереди")
 
     @bot.command()
@@ -1781,13 +1800,14 @@ def setup(bot):
             )
 
         # Получаем общее количество игроков в активных матчах
-        c = db.cursor()
-        c.execute("SELECT COUNT(*) FROM players WHERE in_queue = 1")
-        total_in_queue = c.fetchone()[0] or 0
+        total_in_queue = db_manager.execute(
+            'players',
+            "SELECT COUNT(*) FROM players WHERE in_queue = 1"
+        ).fetchone()[0] or 0
 
         # Получаем количество игроков в активных матчах
-        c = matches_db.cursor()
-        c.execute(
+        total_in_matches = db_manager.execute(
+            'matches',
             """
             SELECT COUNT(DISTINCT player) 
             FROM (
@@ -1795,9 +1815,8 @@ def setup(bot):
                 UNION ALL
                 SELECT player2 AS player FROM matches WHERE isover = 0
             )
-        """
-        )
-        total_in_matches = c.fetchone()[0] or 0
+            """
+        ).fetchone()[0] or 0
 
         # Общее количество игроков "в игре"
         total_in_game = total_in_queue + total_in_matches
@@ -1847,12 +1866,11 @@ def setup(bot):
         screenshot = ctx.message.attachments[0].url
 
         # Проверяем существование матча
-        c = matches_db.cursor()
-        c.execute(
+        match_data = db_manager.execute(
+            'matches',
             "SELECT player1, player2, mode FROM matches WHERE matchid = ?",
             (match_id,),
-        )
-        match_data = c.fetchone()
+        ).fetchone()
 
         if not match_data:
             await ctx.send("❌ Матч с указанным ID не найден.")
@@ -1861,12 +1879,11 @@ def setup(bot):
         player1, player2, mode = match_data
 
         # Проверяем, что игрок участвует в матче
-        c_db = db.cursor()
-        c_db.execute(
+        player_data = db_manager.execute(
+            'players',
             "SELECT playername FROM players WHERE discordid = ?",
             (str(ctx.author.id),),
-        )
-        player_data = c_db.fetchone()
+        ).fetchone()
 
         if not player_data:
             await ctx.send("❌ Вы не зарегистрированы в системе.")
@@ -1882,11 +1899,11 @@ def setup(bot):
         opponent_name = player2 if submitter_name == player1 else player1
 
         # Получаем discord_id оппонента
-        c_db.execute(
+        opponent_data = db_manager.execute(
+            'players',
             "SELECT discordid FROM players WHERE playername = ?",
             (opponent_name,),
-        )
-        opponent_data = c_db.fetchone()
+        ).fetchone()
         
         if not opponent_data:
             await ctx.send("❌ Не удалось найти оппонента в системе")
@@ -1950,19 +1967,20 @@ def setup(bot):
             return
 
         # ПРОВЕРКА ВЕРИФИКАЦИИ ЧЕРЕЗ БАЗУ ДАННЫХ
-        c = db.cursor()
-        c.execute(
-            "SELECT playername FROM players WHERE discordid = ?", (str(ctx.author.id),)
-        )
-        if not c.fetchone():
+        player_data = db_manager.execute(
+            'players',
+            "SELECT playername FROM players WHERE discordid = ?", 
+            (str(ctx.author.id),)
+        ).fetchone()
+        if not player_data:
             await ctx.send("❌ Требуется верификация для использования этой команды")
             return
         # Находим активный матч игрока
-        c = db.cursor()
-        c.execute(
-            "SELECT playername FROM players WHERE discordid = ?", (str(ctx.author.id),)
-        )
-        player_data = c.fetchone()
+        player_data = db_manager.execute(
+            'players',
+            "SELECT playername FROM players WHERE discordid = ?", 
+            (str(ctx.author.id),)
+        ).fetchone()
 
         if not player_data:
             await ctx.send("❌ Вы не зарегистрированы в системе")
@@ -1970,8 +1988,8 @@ def setup(bot):
 
         nickname = player_data[0]
 
-        c = matches_db.cursor()
-        c.execute(
+        match_data = db_manager.execute(
+            'matches',
             """
             SELECT matchid, mode, player1, player2 
             FROM matches 
@@ -1979,8 +1997,7 @@ def setup(bot):
             AND isover = 0
             """,
             (nickname, nickname),
-        )
-        match_data = c.fetchone()
+        ).fetchone()
 
         if not match_data:
             await ctx.send("❌ У вас нет активных матчей")
@@ -2001,7 +2018,8 @@ def setup(bot):
             player2_score = 0
 
         # Обновляем запись матча
-        c.execute(
+        db_manager.execute(
+            'matches',
             """
             UPDATE matches 
             SET player1score = ?, player2score = ?, isover = 1, isverified = 1
@@ -2009,15 +2027,15 @@ def setup(bot):
             """,
             (player1_score, player2_score, match_id),
         )
-        matches_db.commit()
 
         # Обновляем статистику игроков
-        c = db.cursor()
-        c.execute(
+        db_manager.execute(
+            'players',
             "UPDATE players SET wins = wins + 1 WHERE playername = ?",
             (winner,),
         )
-        c.execute(
+        db_manager.execute(
+            'players',
             "UPDATE players SET losses = losses + 1 WHERE playername = ?",
             (loser,),
         )
@@ -2127,9 +2145,11 @@ def setup(bot):
             return
 
         # Проверяем существование матча
-        c = matches_db.cursor()
-        c.execute("SELECT player1, player2 FROM matches WHERE matchid = ?", (match_id,))
-        match_data = c.fetchone()
+        match_data = db_manager.execute(
+            'matches',
+            "SELECT player1, player2 FROM matches WHERE matchid = ?", 
+            (match_id,)
+        ).fetchone()
 
         if not match_data:
             await ctx.send("❌ Матч с указанным ID не найден.")
@@ -2138,11 +2158,11 @@ def setup(bot):
         player1, player2 = match_data
 
         # Проверяем, что игрок участвует в матче
-        c_db = db.cursor()
-        c_db.execute(
-            "SELECT playername FROM players WHERE discordid = ?", (str(ctx.author.id),)
-        )
-        player_data = c_db.fetchone()
+        player_data = db_manager.execute(
+            'players',
+            "SELECT playername FROM players WHERE discordid = ?", 
+            (str(ctx.author.id),)
+        ).fetchone()
 
         if not player_data:
             await ctx.send("❌ Вы не зарегистрированы в системе")
@@ -2158,8 +2178,11 @@ def setup(bot):
         violator_name = player2 if reporter_name == player1 else player1
 
         # Помечаем матч как завершенный (но не проверенный)
-        c.execute("UPDATE matches SET isover = 1 WHERE matchid = ?", (match_id,))
-        matches_db.commit()
+        db_manager.execute(
+            'matches',
+            "UPDATE matches SET isover = 1 WHERE matchid = ?", 
+            (match_id,)
+        )
 
         # Сохраняем скриншот если есть
         screenshot_url = None
@@ -2243,12 +2266,11 @@ class ConfirmMatchView(View):
             return
 
         # Получаем информацию о матче из БД
-        c = matches_db.cursor()
-        c.execute(
+        match = db_manager.execute(
+            'matches',
             "SELECT mode, player1, player2, map FROM matches WHERE matchid = ?",
             (self.match_id,),
-        )
-        match = c.fetchone()
+        ).fetchone()
 
         if not match:
             await interaction.response.send_message("Матч не найден", ephemeral=True)
@@ -2264,12 +2286,11 @@ class ConfirmMatchView(View):
             presumed_winner = player2
 
         # Проверяем, что результат отправил победитель
-        c_db = db.cursor()
-        c_db.execute(
+        submitter_data = db_manager.execute(
+            'players',
             "SELECT playername FROM players WHERE discordid = ?",
             (str(result_data["submitted_by"]),),
-        )
-        submitter_data = c_db.fetchone()
+        ).fetchone()
 
         if not submitter_data:
             await interaction.response.send_message(
@@ -2306,25 +2327,31 @@ class ConfirmMatchView(View):
         update_player_rating(player2, new_rating2, mode)
 
         # Обновляем статистику
-        c = db.cursor()
         if result == 1:
-            c.execute(
-                "UPDATE players SET wins = wins + 1 WHERE playername = ?", (player1,)
+            db_manager.execute(
+                'players',
+                "UPDATE players SET wins = wins + 1 WHERE playername = ?", 
+                (player1,)
             )
-            c.execute(
+            db_manager.execute(
+                'players',
                 "UPDATE players SET losses = losses + 1 WHERE playername = ?",
                 (player2,),
             )
         elif result == 0:
-            c.execute(
-                "UPDATE players SET wins = wins + 1 WHERE playername = ?", (player2,)
+            db_manager.execute(
+                'players',
+                "UPDATE players SET wins = wins + 1 WHERE playername = ?", 
+                (player2,)
             )
-            c.execute(
+            db_manager.execute(
+                'players',
                 "UPDATE players SET losses = losses + 1 WHERE playername = ?",
                 (player1,),
             )
         else:  # Ничья
-            c.execute(
+            db_manager.execute(
+                'players',
                 "UPDATE players SET ties = ties + 1 WHERE playername IN (?, ?)",
                 (player1, player2),
             )
@@ -2332,98 +2359,113 @@ class ConfirmMatchView(View):
         # Обновляем счетчики для конкретного режима
         if mode == MODES["station5f"]:
             if result == 1:
-                c.execute(
+                db_manager.execute(
+                    'players',
                     "UPDATE players SET wins_station5f = wins_station5f + 1 WHERE playername = ?",
                     (player1,),
                 )
-                c.execute(
+                db_manager.execute(
+                    'players',
                     "UPDATE players SET losses_station5f = losses_station5f + 1 WHERE playername = ?",
                     (player2,),
                 )
             elif result == 0:
-                c.execute(
+                db_manager.execute(
+                    'players',
                     "UPDATE players SET wins_station5f = wins_station5f + 1 WHERE playername = ?",
                     (player2,),
                 )
-                c.execute(
+                db_manager.execute(
+                    'players',
                     "UPDATE players SET losses_station5f = losses_station5f + 1 WHERE playername = ?",
                     (player1,),
                 )
             else:
-                c.execute(
+                db_manager.execute(
+                    'players',
                     "UPDATE players SET ties_station5f = ties_station5f + 1 WHERE playername = ?",
                     (player1,),
                 )
-                c.execute(
+                db_manager.execute(
+                    'players',
                     "UPDATE players SET ties_station5f = ties_station5f + 1 WHERE playername = ?",
                     (player2,),
                 )
         elif mode == MODES["mots"]:
             if result == 1:
-                c.execute(
+                db_manager.execute(
+                    'players',
                     "UPDATE players SET wins_mots = wins_mots + 1 WHERE playername = ?",
                     (player1,),
                 )
-                c.execute(
+                db_manager.execute(
+                    'players',
                     "UPDATE players SET losses_mots = losses_mots + 1 WHERE playername = ?",
                     (player2,),
                 )
             elif result == 0:
-                c.execute(
+                db_manager.execute(
+                    'players',
                     "UPDATE players SET wins_mots = wins_mots + 1 WHERE playername = ?",
                     (player2,),
                 )
-                c.execute(
+                db_manager.execute(
+                    'players',
                     "UPDATE players SET losses_mots = losses_mots + 1 WHERE playername = ?",
                     (player1,),
                 )
             else:
-                c.execute(
+                db_manager.execute(
+                    'players',
                     "UPDATE players SET ties_mots = ties_mots + 1 WHERE playername = ?",
                     (player1,),
                 )
-                c.execute(
+                db_manager.execute(
+                    'players',
                     "UPDATE players SET ties_mots = ties_mots + 1 WHERE playername = ?",
                     (player2,),
                 )
         elif mode == MODES["12min"]:
             if result == 1:
-                c.execute(
+                db_manager.execute(
+                    'players',
                     "UPDATE players SET wins_12min = wins_12min + 1 WHERE playername = ?",
                     (player1,),
                 )
-                c.execute(
+                db_manager.execute(
+                    'players',
                     "UPDATE players SET losses_12min = losses_12min + 1 WHERE playername = ?",
                     (player2,),
                 )
             elif result == 0:
-                c.execute(
+                db_manager.execute(
+                    'players',
                     "UPDATE players SET wins_12min = wins_12min + 1 WHERE playername = ?",
                     (player2,),
                 )
-                c.execute(
+                db_manager.execute(
+                    'players',
                     "UPDATE players SET losses_12min = losses_12min + 1 WHERE playername = ?",
                     (player1,),
                 )
             else:
-                c.execute(
+                db_manager.execute(
+                    'players',
                     "UPDATE players SET ties_12min = ties_12min + 1 WHERE playername = ?",
                     (player1,),
                 )
-                c.execute(
+                db_manager.execute(
+                    'players',
                     "UPDATE players SET ties_12min = ties_12min + 1 WHERE playername = ?",
                     (player2,),
                 )
 
-        db.commit()
-
         # Обновляем запись матча с полученным счетом
-        c = matches_db.cursor()
-        c.execute(
+        db_manager.execute(
+            'matches',
             "UPDATE matches SET player1score = ?, player2score = ?, isover = 1, isverified = 1 WHERE matchid = ?",
             (score1, score2, self.match_id),
         )
-        matches_db.commit()
 
         # Удаляем результат из ожидающих
         if self.result_message_id in pending_results:
@@ -2503,11 +2545,11 @@ class ConfirmMatchView(View):
             del pending_results[self.result_message_id]
 
         # Помечаем матч как отклоненный
-        c = matches_db.cursor()
-        c.execute(
-            "UPDATE matches SET isverified = 2 WHERE matchid = ?", (self.match_id,)
+        db_manager.execute(
+            'matches',
+            "UPDATE matches SET isverified = 2 WHERE matchid = ?", 
+            (self.match_id,)
         )
-        matches_db.commit()
 
         # Логирование отклонения
         guild = interaction.guild

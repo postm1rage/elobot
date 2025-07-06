@@ -1,11 +1,10 @@
 import discord
 from discord.ext import tasks
-from config import db
+from db_manager import db_manager  # Заменяем прямой импорт db
 import logging
 
 # Настройка логирования
 logger = logging.getLogger("nickname_updater")
-
 
 async def update_nickname(member, new_nickname):
     """Обновляет никнейм участника с обработкой ошибок"""
@@ -45,7 +44,6 @@ async def update_nickname(member, new_nickname):
     except Exception as e:
         logger.error(f"Неизвестная ошибка: {e}")
 
-
 def setup_nickname_updater(bot):
     """Инициализирует систему обновления ников"""
 
@@ -54,10 +52,11 @@ def setup_nickname_updater(bot):
         """Обновляет ники на всех серверах"""
         logger.info("Запуск периодического обновления ников")
 
-        # Получаем всех игроков из БД
-        c = db.cursor()
-        c.execute("SELECT discordid, playername, currentelo FROM players")
-        players = c.fetchall()
+        # Получаем всех игроков из БД через db_manager
+        players = db_manager.fetchall(
+            'players',
+            "SELECT discordid, playername, currentelo FROM players"
+        )
 
         # Создаем словарь {discordid: (nickname, elo)}
         player_data = {
@@ -90,13 +89,12 @@ def setup_nickname_updater(bot):
         """Обновляем ник при присоединении к серверу"""
         discord_id = str(member.id)
 
-        # Получаем данные игрока из БД
-        c = db.cursor()
-        c.execute(
+        # Получаем данные игрока из БД через db_manager
+        player = db_manager.fetchone(
+            'players',
             "SELECT playername, currentelo FROM players WHERE discordid = ?",
-            (discord_id,),
+            (discord_id,)
         )
-        player = c.fetchone()
 
         if player:
             nickname, elo = player

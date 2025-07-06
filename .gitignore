@@ -7,3 +7,5 @@ elobotmatches.db
 *.log
 elobotplayers.db-journal
 elobotmatches.db-journal
+*.db-shm
+*.db-wal

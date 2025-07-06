@@ -6,13 +6,10 @@ from role_manager import setup_role_manager
 from nickname_updater import setup_nickname_updater
 from config import (
     bot,
-    db,
-    matches_db,
     MODERATOR_ID,
     MODE_NAMES,
     VERIFY_CHANNEL_NAME,
     RESULTS_CHANNEL_NAME,
-    MODERATOR_ID,
     LEADERBOARD_MODES,
     MODES,
 )
@@ -20,18 +17,59 @@ from verification import (
     setup_verified_role,
     setup as setup_verification,
     VerifyView,
-)  # Добавлен VerifyView
+)
 from queueing import setup as setup_queueing, ConfirmMatchView, find_match
 from queueing import check_expired_matches
 import re
 from discord.ui import View, Button, Select
 import discord
-
+from db_manager import db_manager
 
 load_dotenv()
 token = os.getenv("DISCORD_TOKEN")
 
 handler = logging.FileHandler(filename="discord.log", encoding="utf-8", mode="w")
+
+
+class LeaderboardView(discord.ui.View):
+    """View с кнопками для переключения режимов лидерборда"""
+
+    def __init__(self, current_mode):
+        super().__init__(timeout=180)
+        self.current_mode = current_mode
+
+        # Создаем кнопки для всех режимов
+        modes = [
+            ("🌟 Общий", "overall", discord.ButtonStyle.green),
+            ("🚩 Station", "station5flags", discord.ButtonStyle.blurple),
+            ("🔫 MotS", "mots", discord.ButtonStyle.red),
+            ("⏱ 12min", "12min", discord.ButtonStyle.grey),
+        ]
+
+        for label, mode, style in modes:
+            # Для текущего режима делаем кнопку неактивной
+            disabled = mode == current_mode
+            button = discord.ui.Button(
+                label=label, style=style, custom_id=f"lb_{mode}", disabled=disabled
+            )
+            button.callback = lambda i, m=mode: self.button_callback(i, m)
+            self.add_item(button)
+
+    async def button_callback(self, interaction: discord.Interaction, mode: str):
+        """Обработчик нажатия кнопки"""
+        # Обновляем лидерборд для выбранного режима
+        await send_leaderboard(interaction, mode)
+        await interaction.response.defer()
+
+    async def on_timeout(self):
+        """Делаем все кнопки неактивными после таймаута"""
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                item.disabled = True
+        try:
+            await self.message.edit(view=self)
+        except:
+            pass
 
 
 @bot.event
@@ -40,18 +78,16 @@ async def on_ready():
 
     # Сбрасываем флаги в очереди в БД
     try:
-        c = db.cursor()
-        c.execute("UPDATE players SET in_queue = 0")
-        db.commit()
+        db_manager.execute("players", "UPDATE players SET in_queue = 0")
         print("[INIT] Сброшены флаги in_queue для всех игроков")
     except Exception as e:
         print(f"[INIT] Ошибка сброса флагов: {e}")
 
     # Восстанавливаем очереди из БД
     try:
-        c = db.cursor()
-        c.execute("SELECT playername, discordid FROM players WHERE in_queue = 1")
-        players_in_queue = c.fetchall()
+        players_in_queue = db_manager.fetchall(
+            "players", "SELECT playername, discordid FROM players WHERE in_queue = 1"
+        )
     except Exception as e:
         print(f"[INIT] Ошибка восстановления очереди: {e}")
 
@@ -159,9 +195,7 @@ async def help(ctx):
     # Поддержка
     embed.add_field(
         name="🆘 Поддержка",
-        value=(
-            "По всем вопросам, предложениям и ошибкам обращайтесь к @postm1rage\n"
-        ),
+        value=("По всем вопросам, предложениям и ошибкам обращайтесь к @postm1rage\n"),
         inline=False,
     )
 
@@ -197,22 +231,19 @@ async def help(ctx):
 @bot.command()
 async def playerinfo(ctx, nickname: str):
     """Показывает информацию об игроке"""
-    c = db.cursor()
-    c.execute(
+    player = db_manager.fetchone(
+        "players",
         """
-    SELECT playerid, playername, currentelo, 
-           elo_station5f, elo_mots, elo_12min,
-           wins, losses, ties
-    FROM players
-    WHERE playername = ?
-    """,
+        SELECT playerid, playername, currentelo, 
+               elo_station5f, elo_mots, elo_12min,
+               wins, losses, ties
+        FROM players
+        WHERE playername = ?
+        """,
         (nickname,),
     )
 
-    player = c.fetchone()
-
     if player:
-        # Рассчитываем общее количество матчей
         total_matches = player[6] + player[7] + player[8]  # wins + losses + ties
 
         player_data = {
@@ -225,7 +256,7 @@ async def playerinfo(ctx, nickname: str):
             "wins": player[6],
             "losses": player[7],
             "ties": player[8],
-            "matches": total_matches,  # Используем вычисленное значение
+            "matches": total_matches,
         }
 
         embed = discord.Embed(
@@ -252,125 +283,23 @@ async def playerinfo(ctx, nickname: str):
 @bot.command()
 async def leaderboard(ctx):
     """Показывает таблицу лидеров с кнопками выбора режима"""
-    # Сразу показываем общий рейтинг (any)
     await send_leaderboard(ctx, "overall")
-
-
-async def send_leaderboard(ctx, mode_key):
-    """Отправляет/редактирует таблицу лидеров для указанного режима"""
-    # Определяем колонки для режима
-    elo_col, wins_col, losses_col, ties_col = LEADERBOARD_MODES[mode_key]
-
-    # Получаем данные из БД
-    c = db.cursor()
-    c.execute(
-        f"""
-        SELECT playername, {elo_col}, {wins_col}, {losses_col}, {ties_col}
-        FROM players 
-        ORDER BY {elo_col} DESC 
-        LIMIT 10
-        """
-    )
-    leaders = c.fetchall()
-
-    # Форматируем название режима
-    mode_names = {
-        "overall": "Общий рейтинг",
-        "station5flags": "Station 5 Flags",
-        "mots": "MotS Solo",
-        "12min": "12 Minute",
-    }
-
-    # Создаем embed
-    embed = discord.Embed(
-        title=f"🏆 Топ-10 игроков: {mode_names[mode_key]}",
-        color=discord.Color.gold(),
-    )
-
-    for i, (name, elo, wins, losses, ties) in enumerate(leaders, 1):
-        total = wins + losses + ties
-        winrate = (wins / total * 100) if total > 0 else 0
-
-        embed.add_field(
-            name=f"{i}. {name}",
-            value=(
-                f"ELO: {elo}\n"
-                f"Победы: {wins} | Поражения: {losses} | Ничьи: {ties}\n"
-                f"Винрейт: {winrate:.1f}%"
-            ),
-            inline=False,
-        )
-
-    embed.set_footer(text=f"Обновлено: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-
-    # Создаем View с кнопками
-    view = LeaderboardView(mode_key)
-
-    # Если сообщение уже существует - редактируем, иначе создаем новое
-    if hasattr(ctx, "leaderboard_message"):
-        await ctx.leaderboard_message.edit(embed=embed, view=view)
-    else:
-        ctx.leaderboard_message = await ctx.send(embed=embed, view=view)
-
-
-class LeaderboardView(discord.ui.View):
-    """View с кнопками для переключения режимов лидерборда"""
-
-    def __init__(self, current_mode):
-        super().__init__(timeout=180)
-        self.current_mode = current_mode
-
-        # Создаем кнопки для всех режимов
-        modes = [
-            ("🌟 Общий", "overall", discord.ButtonStyle.green),
-            ("🚩 Station", "station5flags", discord.ButtonStyle.blurple),
-            ("🔫 MotS", "mots", discord.ButtonStyle.red),
-            ("⏱ 12min", "12min", discord.ButtonStyle.grey),
-        ]
-
-        for label, mode, style in modes:
-            # Для текущего режима делаем кнопку неактивной
-            disabled = mode == current_mode
-            button = discord.ui.Button(
-                label=label, style=style, custom_id=f"lb_{mode}", disabled=disabled
-            )
-            button.callback = lambda i, m=mode: self.button_callback(i, m)
-            self.add_item(button)
-
-    async def button_callback(self, interaction: discord.Interaction, mode: str):
-        # Обновляем лидерборд для выбранного режима
-        await send_leaderboard(interaction, mode)
-        await interaction.response.defer()
-
-    async def on_timeout(self):
-        # Делаем все кнопки неактивными после таймаута
-        for item in self.children:
-            if isinstance(item, discord.ui.Button):
-                item.disabled = True
-        try:
-            await self.message.edit(view=self)
-        except:
-            pass
 
 
 async def send_leaderboard(source, mode_key):
     """Универсальная функция отправки/обновления лидерборда"""
-    # Определяем колонки для режима
     elo_col, wins_col, losses_col, ties_col = LEADERBOARD_MODES[mode_key]
 
-    # Получаем данные из БД
-    c = db.cursor()
-    c.execute(
+    leaders = db_manager.fetchall(
+        "players",
         f"""
         SELECT playername, {elo_col}, {wins_col}, {losses_col}, {ties_col}
         FROM players 
         ORDER BY {elo_col} DESC 
         LIMIT 10
-        """
+        """,
     )
-    leaders = c.fetchall()
 
-    # Форматируем название режима
     mode_names = {
         "overall": "Общий рейтинг",
         "station5flags": "Station 5 Flags",
@@ -378,7 +307,6 @@ async def send_leaderboard(source, mode_key):
         "12min": "12 Minute",
     }
 
-    # Создаем embed
     embed = discord.Embed(
         title=f"🏆 Топ-10 игроков: {mode_names[mode_key]}",
         color=discord.Color.gold(),
@@ -400,16 +328,12 @@ async def send_leaderboard(source, mode_key):
 
     embed.set_footer(text=f"Обновлено: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
-    # Создаем View с кнопками
     view = LeaderboardView(mode_key)
 
-    # Определяем как обновлять сообщение
     if isinstance(source, discord.Interaction):
-        # Для взаимодействия с кнопкой
         view.message = source.message
         await source.message.edit(embed=embed, view=view)
     else:
-        # Для первоначального вызова команды
         source.leaderboard_message = await source.send(embed=embed, view=view)
 
 
@@ -418,12 +342,9 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    # Добавим логгирование для диагностики
     print(f"Получено сообщение в #{message.channel.name}: {message.content[:20]}...")
 
-    # Обработка результатов матча ТОЛЬКО в канале elobot-results
     if message.channel.name == "elobot-results" and message.attachments:
-        # Парсим счет
         score_match = re.search(r"(\d+)\s*-\s*(\d+)", message.content)
         if not score_match:
             return
@@ -431,33 +352,29 @@ async def on_message(message):
         score1 = int(score_match.group(1))
         score2 = int(score_match.group(2))
 
-        # Проверяем равенство счета
         if score1 == score2:
             await message.channel.send(
                 "❌ Счет не может быть равным! Матч должен иметь победителя."
             )
             return
 
-        # Определяем победителя
         winner_score = max(score1, score2)
         loser_score = min(score1, score2)
         is_player1_winner = score1 > score2
 
-        # Ищем активный матч игрока
-        c = db.cursor()
-        c.execute(
+        player_data = db_manager.fetchone(
+            "players",
             "SELECT playername FROM players WHERE discordid = ?",
             (str(message.author.id),),
         )
-        player_data = c.fetchone()
         if not player_data:
             await message.channel.send("❌ Вы не зарегистрированы в системе")
             return
 
         nickname = player_data[0]
 
-        c = matches_db.cursor()
-        c.execute(
+        match_data = db_manager.fetchone(
+            "matches",
             """
             SELECT matchid, player1, player2, mode 
             FROM matches 
@@ -466,7 +383,6 @@ async def on_message(message):
             """,
             (nickname, nickname),
         )
-        match_data = c.fetchone()
 
         if not match_data:
             await message.channel.send("❌ Активный матч не найден")
@@ -474,7 +390,6 @@ async def on_message(message):
 
         match_id, player1, player2, mode = match_data
 
-        # Проверяем, что сообщение отправил победитель
         if is_player1_winner and nickname != player1:
             await message.channel.send(
                 f"❌ Результат должен отправлять победитель ({player1})!"
@@ -486,7 +401,6 @@ async def on_message(message):
             )
             return
 
-        # Определяем порядок счета
         if nickname == player1:
             player1_score, player2_score = score1, score2
             winner, loser = player1, player2
@@ -494,8 +408,8 @@ async def on_message(message):
             player1_score, player2_score = score2, score1
             winner, loser = player2, player1
 
-        # Обновляем запись матча
-        c.execute(
+        db_manager.execute(
+            "matches",
             """
             UPDATE matches 
             SET player1score = ?, player2score = ?
@@ -503,109 +417,125 @@ async def on_message(message):
             """,
             (player1_score, player2_score, match_id),
         )
-        matches_db.commit()
 
-        # Обновляем статистику в БД
-        c = db.cursor()
+        # Обновляем статистику
         if player1_score > player2_score:
-            # Победа player1
-            c.execute(
-                "UPDATE players SET wins = wins + 1 WHERE playername = ?", (winner,)
+            db_manager.execute(
+                "players",
+                "UPDATE players SET wins = wins + 1 WHERE playername = ?",
+                (winner,),
             )
-            c.execute(
-                "UPDATE players SET losses = losses + 1 WHERE playername = ?", (loser,)
+            db_manager.execute(
+                "players",
+                "UPDATE players SET losses = losses + 1 WHERE playername = ?",
+                (loser,),
             )
 
             if mode == MODES["station5f"]:
-                c.execute(
+                db_manager.execute(
+                    "players",
                     "UPDATE players SET wins_station5f = wins_station5f + 1 WHERE playername = ?",
                     (winner,),
                 )
-                c.execute(
+                db_manager.execute(
+                    "players",
                     "UPDATE players SET losses_station5f = losses_station5f + 1 WHERE playername = ?",
                     (loser,),
                 )
             elif mode == MODES["mots"]:
-                c.execute(
+                db_manager.execute(
+                    "players",
                     "UPDATE players SET wins_mots = wins_mots + 1 WHERE playername = ?",
                     (winner,),
                 )
-                c.execute(
+                db_manager.execute(
+                    "players",
                     "UPDATE players SET losses_mots = losses_mots + 1 WHERE playername = ?",
                     (loser,),
                 )
             elif mode == MODES["12min"]:
-                c.execute(
+                db_manager.execute(
+                    "players",
                     "UPDATE players SET wins_12min = wins_12min + 1 WHERE playername = ?",
                     (winner,),
                 )
-                c.execute(
+                db_manager.execute(
+                    "players",
                     "UPDATE players SET losses_12min = losses_12min + 1 WHERE playername = ?",
                     (loser,),
                 )
 
         elif player1_score < player2_score:
-            # Победа player2
-            c.execute(
-                "UPDATE players SET wins = wins + 1 WHERE playername = ?", (winner,)
+            db_manager.execute(
+                "players",
+                "UPDATE players SET wins = wins + 1 WHERE playername = ?",
+                (winner,),
             )
-            c.execute(
-                "UPDATE players SET losses = losses + 1 WHERE playername = ?", (loser,)
+            db_manager.execute(
+                "players",
+                "UPDATE players SET losses = losses + 1 WHERE playername = ?",
+                (loser,),
             )
 
             if mode == MODES["station5f"]:
-                c.execute(
+                db_manager.execute(
+                    "players",
                     "UPDATE players SET wins_station5f = wins_station5f + 1 WHERE playername = ?",
                     (winner,),
                 )
-                c.execute(
+                db_manager.execute(
+                    "players",
                     "UPDATE players SET losses_station5f = losses_station5f + 1 WHERE playername = ?",
                     (loser,),
                 )
             elif mode == MODES["mots"]:
-                c.execute(
+                db_manager.execute(
+                    "players",
                     "UPDATE players SET wins_mots = wins_mots + 1 WHERE playername = ?",
                     (winner,),
                 )
-                c.execute(
+                db_manager.execute(
+                    "players",
                     "UPDATE players SET losses_mots = losses_mots + 1 WHERE playername = ?",
                     (loser,),
                 )
             elif mode == MODES["12min"]:
-                c.execute(
+                db_manager.execute(
+                    "players",
                     "UPDATE players SET wins_12min = wins_12min + 1 WHERE playername = ?",
                     (winner,),
                 )
-                c.execute(
+                db_manager.execute(
+                    "players",
                     "UPDATE players SET losses_12min = losses_12min + 1 WHERE playername = ?",
                     (loser,),
                 )
         else:
-            # Ничья
-            c.execute(
+            db_manager.execute(
+                "players",
                 "UPDATE players SET ties = ties + 1 WHERE playername IN (?, ?)",
                 (player1, player2),
             )
 
             if mode == MODES["station5f"]:
-                c.execute(
+                db_manager.execute(
+                    "players",
                     "UPDATE players SET ties_station5f = ties_station5f + 1 WHERE playername IN (?, ?)",
                     (player1, player2),
                 )
             elif mode == MODES["mots"]:
-                c.execute(
+                db_manager.execute(
+                    "players",
                     "UPDATE players SET ties_mots = ties_mots + 1 WHERE playername IN (?, ?)",
                     (player1, player2),
                 )
             elif mode == MODES["12min"]:
-                c.execute(
+                db_manager.execute(
+                    "players",
                     "UPDATE players SET ties_12min = ties_12min + 1 WHERE playername IN (?, ?)",
                     (player1, player2),
                 )
 
-        db.commit()
-
-        # Отправляем модератору на подтверждение
         moderator = await bot.fetch_user(MODERATOR_ID)
         embed = discord.Embed(
             title="⚠️ Требуется подтверждение матча",
@@ -633,16 +563,13 @@ async def on_message(message):
             print(f"Ошибка при удалении сообщения: {e}")
         return
 
-    # Всегда обрабатываем команды после нашей кастомной логики
     await bot.process_commands(message)
 
 
-# Закрытие базы данных при завершении
 @bot.event
 async def on_disconnect():
-    matches_db.close()
-    db.close()
-    print("Базы данных закрыты")
+    db_manager.close_all()
+    print("Соединения с БД закрыты")
 
 
 # Настройка модулей

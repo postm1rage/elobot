@@ -1,6 +1,6 @@
-import sqlite3
 import discord
 from discord.ext import commands
+from db_manager import db_manager  # Импорт менеджера БД
 
 # Карты для черкания
 MAPS = ["Бумбокс", "Дуалити", "Зона", "Сандал", "Станция", "Мостик", "Магадан"]
@@ -31,102 +31,6 @@ LEADERBOARD_MODES = {
     "12min": ("elo_12min", "wins_12min", "losses_12min", "ties_12min"),
 }
 
-
-# Инициализация базы данных игроков
-def init_db():
-    db = sqlite3.connect("elobotplayers.db")
-    c = db.cursor()
-
-    c.execute(
-        """
-CREATE TABLE IF NOT EXISTS players (
-    playerid INTEGER PRIMARY KEY AUTOINCREMENT,
-    playername TEXT NOT NULL UNIQUE,
-    discordid TEXT NOT NULL UNIQUE,
-    currentelo INTEGER DEFAULT 1000,
-    elo_station5f INTEGER DEFAULT 1000,
-    elo_mots INTEGER DEFAULT 1000,
-    elo_12min INTEGER DEFAULT 1000,
-    wins INTEGER DEFAULT 0,
-    losses INTEGER DEFAULT 0,
-    ties INTEGER DEFAULT 0,
-    wins_station5f INTEGER DEFAULT 0,
-    losses_station5f INTEGER DEFAULT 0,
-    ties_station5f INTEGER DEFAULT 0,
-    wins_mots INTEGER DEFAULT 0,
-    losses_mots INTEGER DEFAULT 0,
-    ties_mots INTEGER DEFAULT 0,
-    wins_12min INTEGER DEFAULT 0,
-    losses_12min INTEGER DEFAULT 0,
-    ties_12min INTEGER DEFAULT 0,
-    currentmatches INTEGER DEFAULT 0,
-    in_queue INTEGER DEFAULT 0
-)
-"""
-    )
-    c.execute(
-        """
-    CREATE TRIGGER IF NOT EXISTS update_match_count 
-    AFTER UPDATE OF wins, losses, ties ON players
-    BEGIN
-        UPDATE players 
-        SET currentmatches = NEW.wins + NEW.losses + NEW.ties 
-        WHERE playerid = NEW.playerid;
-    END;
-    """
-    )
-
-    # Добавляем вычисление для существующих записей
-    c.execute(
-        """
-    UPDATE players 
-    SET currentmatches = wins + losses + ties 
-    WHERE currentmatches != wins + losses + ties 
-       OR currentmatches IS NULL;
-    """
-    )
-    db.commit()
-    return db
-
-
-# Инициализация базы данных матчей
-def init_matches_db():
-    matches_db = sqlite3.connect("elobotmatches.db")
-    c = matches_db.cursor()
-
-    c.execute(
-        """
-    CREATE TABLE IF NOT EXISTS matches (
-        matchid INTEGER PRIMARY KEY AUTOINCREMENT,
-        mode INTEGER NOT NULL,
-        player1 TEXT NOT NULL,
-        player2 TEXT NOT NULL,
-        isover INTEGER DEFAULT 0,
-        player1score INTEGER,
-        player2score INTEGER,
-        isverified INTEGER DEFAULT 0,
-        map TEXT
-    )
-    """
-    )
-    # Проверяем существование колонки map
-    c.execute("PRAGMA table_info(matches)")
-    columns = [info[1] for info in c.fetchall()]
-
-    if "map" not in columns:
-        # Добавляем колонку map
-        c.execute("ALTER TABLE matches ADD COLUMN map TEXT")
-        print("Добавлена колонка 'map' в таблицу 'matches'")
-
-    # +++ ДОБАВЛЯЕМ ПРОВЕРКУ ДЛЯ НОВОГО ПОЛЯ +++
-    if "start_time" not in columns:
-        c.execute("ALTER TABLE matches ADD COLUMN start_time DATETIME")
-        print("Добавлена колонка 'start_time' в таблицу 'matches'")
-
-    matches_db.commit()
-    return matches_db
-
-
 # Инициализация бота
 intents = discord.Intents.default()
 intents.message_content = True
@@ -137,6 +41,36 @@ bot = commands.Bot(
     command_prefix=".",
 )
 
-# Инициализация баз данных
-db = init_db()
-matches_db = init_matches_db()
+# Удалил старую инициализацию бд, добавил её в db_manager
+# init_db() и init_matches_db() больше не нужны
+
+
+# Добавляем вспомогательные функции для удобства
+def get_player_db():
+    """Возвращает соединение с базой игроков"""
+    return db_manager.get_connection("players")
+
+
+def get_matches_db():
+    """Возвращает соединение с базой матчей"""
+    return db_manager.get_connection("matches")
+
+
+def execute_players(query, params=()):
+    """Выполняет запрос к базе игроков"""
+    return db_manager.execute("players", query, params)
+
+
+def execute_matches(query, params=()):
+    """Выполняет запрос к базе матчей"""
+    return db_manager.execute("matches", query, params)
+
+
+def fetch_player(query, params=()):
+    """Получает одну запись из базы игроков"""
+    return db_manager.fetchone("players", query, params)
+
+
+def fetch_match(query, params=()):
+    """Получает одну запись из базы матчей"""
+    return db_manager.fetchone("matches", query, params)

@@ -1,16 +1,17 @@
 import discord
 from discord.ui import View, Button
-from config import db, bot
-import sqlite3
+from db_manager import db_manager
 import logging
 from role_manager import assign_role  # Импорт функции выдачи роли
 
 # Настройка логгера
-logger = logging.getLogger('verification')
+logger = logging.getLogger("verification")
+
 
 class VerifyView(View):
-    def __init__(self, verify_message_id, guild_id, player_nickname):
+    def __init__(self, bot_instance, verify_message_id, guild_id, player_nickname):
         super().__init__(timeout=None)
+        self.bot = bot_instance
         self.verify_message_id = verify_message_id
         self.guild_id = guild_id
         self.player_nickname = player_nickname
@@ -18,8 +19,8 @@ class VerifyView(View):
     async def add_player_to_db(self, discord_user):
         """Добавляет игрока в базу данных"""
         try:
-            c = db.cursor()
-            c.execute(
+            db_manager.execute(
+                "players",
                 """
                 INSERT INTO players (playername, discordid, currentelo, 
                                     elo_station5f, elo_mots, elo_12min,
@@ -30,15 +31,28 @@ class VerifyView(View):
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    self.player_nickname, 
+                    self.player_nickname,
                     str(discord_user.id),
-                    1000, 1000, 1000, 1000,  # ELO значения
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  # Статистика
+                    1000,
+                    1000,
+                    1000,
+                    1000,  # ELO значения
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,  # Статистика
                 ),
             )
-            db.commit()
             return True
-        except sqlite3.IntegrityError as e:
+        except Exception as e:
             logger.error(f"Ошибка добавления игрока: {e}")
             return False
 
@@ -60,12 +74,12 @@ class VerifyView(View):
                     ),
                     color=discord.Color.green(),
                 )
-                
+
                 # Вызываем выдачу роли
                 await assign_role(user_to_verify)
-                
+
                 # Отправляем кастомное событие
-                bot.dispatch('verification_complete', user_to_verify, guild)
+                self.bot.dispatch("verification_complete", user_to_verify, guild)
             else:
                 embed = discord.Embed(
                     title="❌ Верификация отклонена",
@@ -78,19 +92,27 @@ class VerifyView(View):
             logger.error(f"Ошибка при отправке результата верификации: {e}")
 
     @discord.ui.button(label="Верифицировать", style=discord.ButtonStyle.green)
-    async def verify_accept(self, interaction: discord.Interaction, button: discord.ui.Button):
-        guild = bot.get_guild(self.guild_id)
+    async def verify_accept(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        guild = self.bot.get_guild(self.guild_id)
         if not guild:
-            await interaction.response.send_message("❌ Сервер не найден", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ Сервер не найден", ephemeral=True
+            )
             return
 
         try:
-            verify_channel = discord.utils.get(guild.text_channels, name="elobot-verify")
+            verify_channel = discord.utils.get(
+                guild.text_channels, name="elobot-verify"
+            )
             verify_message = await verify_channel.fetch_message(self.verify_message_id)
             user_to_verify = verify_message.author
 
             if not await self.add_player_to_db(user_to_verify):
-                await interaction.response.send_message("❌ Ошибка добавления в базу данных", ephemeral=True)
+                await interaction.response.send_message(
+                    "❌ Ошибка добавления в базу данных", ephemeral=True
+                )
                 return
 
             await self.send_result(guild, user_to_verify, success=True)
@@ -101,17 +123,25 @@ class VerifyView(View):
             await interaction.response.defer()
         except Exception as e:
             logger.error(f"Ошибка в verify_accept: {e}")
-            await interaction.response.send_message(f"❌ Ошибка: {str(e)}", ephemeral=True)
+            await interaction.response.send_message(
+                f"❌ Ошибка: {str(e)}", ephemeral=True
+            )
 
     @discord.ui.button(label="Отклонить", style=discord.ButtonStyle.red)
-    async def verify_reject(self, interaction: discord.Interaction, button: discord.ui.Button):
-        guild = bot.get_guild(self.guild_id)
+    async def verify_reject(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        guild = self.bot.get_guild(self.guild_id)
         if not guild:
-            await interaction.response.send_message("❌ Сервер не найден", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ Сервер не найден", ephemeral=True
+            )
             return
 
         try:
-            verify_channel = discord.utils.get(guild.text_channels, name="elobot-verify")
+            verify_channel = discord.utils.get(
+                guild.text_channels, name="elobot-verify"
+            )
             verify_message = await verify_channel.fetch_message(self.verify_message_id)
             user_to_verify = verify_message.author
 
@@ -123,23 +153,27 @@ class VerifyView(View):
             await interaction.response.defer()
         except Exception as e:
             logger.error(f"Ошибка в verify_reject: {e}")
-            await interaction.response.send_message(f"❌ Ошибка: {str(e)}", ephemeral=True)
+            await interaction.response.send_message(
+                f"❌ Ошибка: {str(e)}", ephemeral=True
+            )
+
 
 async def setup_verified_role(guild):
     """Создаёт роль verified если её нет"""
     verified_role = discord.utils.get(guild.roles, name="Verified")
-    
+
     if not verified_role:
         try:
             verified_role = await guild.create_role(
                 name="Verified",
                 color=discord.Color.green(),
-                reason="Автоматическое создание роли для верификации"
+                reason="Автоматическое создание роли для верификации",
             )
             logger.info(f"Создана роль 'Verified' на сервере {guild.name}")
         except discord.Forbidden:
             logger.error(f"Нет прав для создания роли на сервере {guild.name}")
     return verified_role
+
 
 def setup(bot):
     @bot.event
@@ -160,7 +194,9 @@ def setup(bot):
             try:
                 # Проверка 1: Наличие скриншота
                 if not message.attachments:
-                    logs_channel = discord.utils.get(message.guild.text_channels, name="elobot-logs")
+                    logs_channel = discord.utils.get(
+                        message.guild.text_channels, name="elobot-logs"
+                    )
                     if logs_channel:
                         embed = discord.Embed(
                             title="❌ Верификация отклонена (автоматически)",
@@ -176,13 +212,14 @@ def setup(bot):
                     return
 
                 # Проверка 2: Существующий Discord ID
-                c = db.cursor()
-                c.execute(
+                if db_manager.execute(
+                    "players",
                     "SELECT 1 FROM players WHERE discordid = ?",
-                    (str(message.author.id),)
-                )
-                if c.fetchone():
-                    logs_channel = discord.utils.get(message.guild.text_channels, name="elobot-logs")
+                    (str(message.author.id),),
+                ).fetchone():
+                    logs_channel = discord.utils.get(
+                        message.guild.text_channels, name="elobot-logs"
+                    )
                     if logs_channel:
                         embed = discord.Embed(
                             title="❌ Верификация отклонена (автоматически)",
@@ -198,12 +235,14 @@ def setup(bot):
                     return
 
                 # Проверка 3: Существующее имя игрока
-                c.execute(
+                if db_manager.execute(
+                    "players",
                     "SELECT 1 FROM players WHERE playername = ?",
-                    (message.content.strip(),)
-                )
-                if c.fetchone():
-                    logs_channel = discord.utils.get(message.guild.text_channels, name="elobot-logs")
+                    (message.content.strip(),),
+                ).fetchone():
+                    logs_channel = discord.utils.get(
+                        message.guild.text_channels, name="elobot-logs"
+                    )
                     if logs_channel:
                         embed = discord.Embed(
                             title="❌ Верификация отклонена (автоматически)",
@@ -219,7 +258,9 @@ def setup(bot):
                     return
 
                 # Если все проверки пройдены - отправляем модератору
-                moderator = await bot.fetch_user(710147702490660914)  # Замените на ID модератора
+                moderator = await bot.fetch_user(
+                    710147702490660914
+                )  # Замените на ID модератора
                 embed = discord.Embed(
                     title="🆕 Новая заявка на верификацию",
                     description=(
@@ -230,17 +271,25 @@ def setup(bot):
                 )
                 embed.set_footer(text=f"ID: {message.id}")
 
-                files = [await attachment.to_file() for attachment in message.attachments]
-                view = VerifyView(message.id, message.guild.id, message.content.strip())
+                files = [
+                    await attachment.to_file() for attachment in message.attachments
+                ]
+                view = VerifyView(
+                    bot, message.id, message.guild.id, message.content.strip()
+                )
 
                 await moderator.send(embed=embed, files=files, view=view)
 
             except Exception as e:
                 logger.error(f"Ошибка обработки верификации: {e}")
                 try:
-                    logs_channel = discord.utils.get(message.guild.text_channels, name="elobot-logs")
+                    logs_channel = discord.utils.get(
+                        message.guild.text_channels, name="elobot-logs"
+                    )
                     if logs_channel:
-                        await logs_channel.send(f"⚠️ Ошибка при обработке верификации: {str(e)}")
+                        await logs_channel.send(
+                            f"⚠️ Ошибка при обработке верификации: {str(e)}"
+                        )
                 except:
                     pass
 
