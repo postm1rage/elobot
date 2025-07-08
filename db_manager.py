@@ -14,7 +14,6 @@ logger.addHandler(handler)
 
 
 class DBManager:
-
     def __init__(self):
         self._connections = {}
         self._lock = threading.Lock()
@@ -24,41 +23,64 @@ class DBManager:
         self._initialize_databases()
 
     def _initialize_databases(self):
-        """Создает таблицы если они не существуют"""
+        """Создает таблицы если они не существуют и добавляет недостающие колонки"""
         with self._lock:
             # Инициализация базы игроков
             conn = sqlite3.connect(self._db_files["players"])
             try:
+                # Проверяем существование таблицы
+                table_exists = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='players'"
+                ).fetchone()
+
+                if table_exists:
+                    # Проверяем существующие колонки
+                    cursor = conn.execute("PRAGMA table_info(players)")
+                    columns = {column[1]: column for column in cursor.fetchall()}
+
+                    # Добавляем недостающие колонки
+                    if "isbanned" not in columns:
+                        conn.execute("ALTER TABLE players ADD COLUMN isbanned BOOLEAN DEFAULT 0")
+                        logger.info("Added isbanned column to players table")
+
+                    if "in_queue" not in columns:
+                        conn.execute("ALTER TABLE players ADD COLUMN in_queue INTEGER DEFAULT 0")
+                        logger.info("Added in_queue column to players table")
+
+                # Создаем таблицу с актуальной структурой
                 conn.execute(
                     """
-                CREATE TABLE IF NOT EXISTS players (
-                    playerid INTEGER PRIMARY KEY AUTOINCREMENT,
-                    playername TEXT NOT NULL UNIQUE,
-                    discordid TEXT NOT NULL UNIQUE,
-                    currentelo INTEGER DEFAULT 1000,
-                    elo_station5f INTEGER DEFAULT 1000,
-                    elo_mots INTEGER DEFAULT 1000,
-                    elo_12min INTEGER DEFAULT 1000,
-                    wins INTEGER DEFAULT 0,
-                    losses INTEGER DEFAULT 0,
-                    ties INTEGER DEFAULT 0,
-                    wins_station5f INTEGER DEFAULT 0,
-                    losses_station5f INTEGER DEFAULT 0,
-                    ties_station5f INTEGER DEFAULT 0,
-                    wins_mots INTEGER DEFAULT 0,
-                    losses_mots INTEGER DEFAULT 0,
-                    ties_mots INTEGER DEFAULT 0,
-                    wins_12min INTEGER DEFAULT 0,
-                    losses_12min INTEGER DEFAULT 0,
-                    ties_12min INTEGER DEFAULT 0,
-                    currentmatches INTEGER DEFAULT 0,
-                    in_queue INTEGER DEFAULT 0,
-                    isbanned BOOLEAN DEFAULT 0
-                )
-                """
+                    CREATE TABLE IF NOT EXISTS players (
+                        playerid INTEGER PRIMARY KEY AUTOINCREMENT,
+                        playername TEXT NOT NULL UNIQUE,
+                        discordid TEXT NOT NULL UNIQUE,
+                        currentelo INTEGER DEFAULT 1000,
+                        elo_station5f INTEGER DEFAULT 1000,
+                        elo_mots INTEGER DEFAULT 1000,
+                        elo_12min INTEGER DEFAULT 1000,
+                        wins INTEGER DEFAULT 0,
+                        losses INTEGER DEFAULT 0,
+                        ties INTEGER DEFAULT 0,
+                        wins_station5f INTEGER DEFAULT 0,
+                        losses_station5f INTEGER DEFAULT 0,
+                        ties_station5f INTEGER DEFAULT 0,
+                        wins_mots INTEGER DEFAULT 0,
+                        losses_mots INTEGER DEFAULT 0,
+                        ties_mots INTEGER DEFAULT 0,
+                        wins_12min INTEGER DEFAULT 0,
+                        losses_12min INTEGER DEFAULT 0,
+                        ties_12min INTEGER DEFAULT 0,
+                        currentmatches INTEGER DEFAULT 0,
+                        in_queue INTEGER DEFAULT 0,
+                        isbanned BOOLEAN DEFAULT 0
+                    )
+                    """
                 )
                 conn.commit()
-                logger.info("Initialized players database")
+                logger.info("Players database initialized/updated")
+            except Exception as e:
+                logger.error(f"Error initializing players database: {e}")
+                raise
             finally:
                 conn.close()
 
@@ -67,22 +89,25 @@ class DBManager:
             try:
                 conn.execute(
                     """
-                CREATE TABLE IF NOT EXISTS matches (
-                    matchid INTEGER PRIMARY KEY AUTOINCREMENT,
-                    mode INTEGER NOT NULL,
-                    player1 TEXT NOT NULL,
-                    player2 TEXT NOT NULL,
-                    isover INTEGER DEFAULT 0,
-                    player1score INTEGER,
-                    player2score INTEGER,
-                    isverified INTEGER DEFAULT 0,
-                    map TEXT,
-                    start_time DATETIME
-                )
-                """
+                    CREATE TABLE IF NOT EXISTS matches (
+                        matchid INTEGER PRIMARY KEY AUTOINCREMENT,
+                        mode INTEGER NOT NULL,
+                        player1 TEXT NOT NULL,
+                        player2 TEXT NOT NULL,
+                        isover INTEGER DEFAULT 0,
+                        player1score INTEGER,
+                        player2score INTEGER,
+                        isverified INTEGER DEFAULT 0,
+                        map TEXT,
+                        start_time DATETIME
+                    )
+                    """
                 )
                 conn.commit()
-                logger.info("Initialized matches database")
+                logger.info("Matches database initialized")
+            except Exception as e:
+                logger.error(f"Error initializing matches database: {e}")
+                raise
             finally:
                 conn.close()
 
@@ -162,7 +187,19 @@ class DBManager:
         conn = self.get_connection(db_type)
         return conn.cursor().lastrowid
 
+    def check_column_exists(self, db_type, table, column):
+        """Проверяет существование колонки в таблице"""
+        try:
+            conn = self.get_connection(db_type)
+            cursor = conn.execute(f"PRAGMA table_info({table})")
+            columns = [col[1] for col in cursor.fetchall()]
+            return column in columns
+        except Exception as e:
+            logger.error(f"Error checking column existence: {e}")
+            return False
 
+
+# Глобальный экземпляр менеджера БД
 db_manager = DBManager()
 
 
@@ -178,6 +215,9 @@ def with_db(db_type):
                 if "closed" in str(e):
                     conn = db_manager.reconnect(db_type)
                     return func(conn, *args, **kwargs)
+                raise
+            except Exception as e:
+                logger.error(f"Database operation failed: {e}")
                 raise
 
         return wrapper

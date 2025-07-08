@@ -27,8 +27,8 @@ class VerifyView(View):
                                     wins, losses, ties, wins_station5f, 
                                     losses_station5f, ties_station5f,
                                     wins_mots, losses_mots, ties_mots,
-                                    wins_12min, losses_12min, ties_12min)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    wins_12min, losses_12min, ties_12min, isbanned)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     self.player_nickname,
@@ -49,6 +49,7 @@ class VerifyView(View):
                     0,
                     0,
                     0,  # Статистика
+                    0,  # isbanned
                 ),
             )
             return True

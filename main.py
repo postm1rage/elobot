@@ -580,4 +580,25 @@ setup_nickname_updater(bot)
 setup_role_manager(bot)
 setup_ban(bot)
 
+@bot.check
+async def globally_check_ban(ctx):
+    # Разрешаем команды в этих каналах без проверки
+    if ctx.channel.name in ["elobot-verify", "elobot-logs"]:
+        return True
+        
+    # Разрешаем команды модератору
+    if ctx.author.id == MODERATOR_ID:
+        return True
+        
+    player = db_manager.fetchone(
+        "players",
+        "SELECT isbanned FROM players WHERE discordid = ?",
+        (str(ctx.author.id),),
+    )
+    
+    if player and player[0] == 1:  # Если isbanned == 1
+        await ctx.send("⛔ Вы забанены и не можете использовать команды бота.")
+        return False
+    return True
+
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
