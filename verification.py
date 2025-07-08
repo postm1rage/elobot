@@ -3,6 +3,7 @@ from discord.ui import View, Button
 from db_manager import db_manager
 import logging
 from role_manager import assign_role  # Импорт функции выдачи роли
+from config import MODERATOR_ID
 
 # Настройка логгера
 logger = logging.getLogger("verification")
@@ -12,6 +13,7 @@ class VerifyView(View):
     def __init__(self, bot_instance, verify_message_id, guild_id, player_nickname):
         super().__init__(timeout=None)
         self.bot = bot_instance
+        self.custom_id = f"verify_view_{player_nickname}_{verify_message_id}"
         self.verify_message_id = verify_message_id
         self.guild_id = guild_id
         self.player_nickname = player_nickname
@@ -260,7 +262,7 @@ def setup(bot):
 
                 # Если все проверки пройдены - отправляем модератору
                 moderator = await bot.fetch_user(
-                    710147702490660914
+                    MODERATOR_ID
                 )  # Замените на ID модератора
                 embed = discord.Embed(
                     title="🆕 Новая заявка на верификацию",
