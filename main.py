@@ -598,7 +598,7 @@ async def globally_check_ban(ctx):
 
 
 async def load_extensions():
-    await setup_tournaments(bot)
+    await bot.load_extension("tournaments")
 
 
 @bot.event
