@@ -18,6 +18,7 @@ from verification import (
     setup as setup_verification,
     VerifyView,
 )
+from ban import setup as setup_ban
 from queueing import setup as setup_queueing, ConfirmMatchView, find_match
 from queueing import check_expired_matches
 import re
@@ -577,5 +578,6 @@ setup_queueing(bot)
 setup_verification(bot)
 setup_nickname_updater(bot)
 setup_role_manager(bot)
+setup_ban(bot)
 
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)

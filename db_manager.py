@@ -52,7 +52,8 @@ class DBManager:
                     losses_12min INTEGER DEFAULT 0,
                     ties_12min INTEGER DEFAULT 0,
                     currentmatches INTEGER DEFAULT 0,
-                    in_queue INTEGER DEFAULT 0
+                    in_queue INTEGER DEFAULT 0,
+                    isbanned BOOLEAN DEFAULT 0
                 )
                 """
                 )
