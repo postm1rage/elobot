@@ -4,6 +4,7 @@ import os
 from datetime import datetime
 from role_manager import setup_role_manager
 from nickname_updater import setup_nickname_updater
+from tournaments import setup as setup_tournaments
 from config import (
     bot,
     MODERATOR_ID,
@@ -112,13 +113,6 @@ async def on_ready():
             print(f"⚠️ На сервере '{guild.name}' нет канала 'elobot-verify'")
         if not logs_channel:
             print(f"⚠️ На сервере '{guild.name}' нет канала 'elobot-logs'")
-
-
-@bot.event
-async def setup_hook():
-    """Асинхронный хук для запуска фоновых задач"""
-    bot.loop.create_task(find_match())
-    bot.loop.create_task(check_expired_matches(bot))
 
 
 bot.remove_command("help")
@@ -580,25 +574,38 @@ setup_nickname_updater(bot)
 setup_role_manager(bot)
 setup_ban(bot)
 
+
 @bot.check
 async def globally_check_ban(ctx):
     # Разрешаем команды в этих каналах без проверки
     if ctx.channel.name in ["elobot-verify", "elobot-logs"]:
         return True
-        
+
     # Разрешаем команды модератору
     if ctx.author.id == MODERATOR_ID:
         return True
-        
+
     player = db_manager.fetchone(
         "players",
         "SELECT isbanned FROM players WHERE discordid = ?",
         (str(ctx.author.id),),
     )
-    
+
     if player and player[0] == 1:  # Если isbanned == 1
         await ctx.send("⛔ Вы забанены и не можете использовать команды бота.")
         return False
     return True
+
+
+async def load_extensions():
+    await setup_tournaments(bot)
+
+
+@bot.event
+async def setup_hook():
+    bot.loop.create_task(find_match())
+    bot.loop.create_task(check_expired_matches(bot))
+    await load_extensions()
+
 
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
