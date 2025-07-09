@@ -1,11 +1,8 @@
 .git
-discord.log
-elobotplayers.db
+*.log
 __pycache__/
 *.pyc
-elobotmatches.db
-*.log
-elobotplayers.db-journal
-elobotmatches.db-journal
+*db-journal
 *.db-shm
 *.db-wal
+*.db

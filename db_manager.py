@@ -17,7 +17,11 @@ class DBManager:
     def __init__(self):
         self._connections = {}
         self._lock = threading.Lock()
-        self._db_files = {"players": "elobotplayers.db", "matches": "elobotmatches.db"}
+        self._db_files = {
+            "players": "elobotplayers.db",
+            "matches": "elobotmatches.db",
+            "tournaments": "elotournaments.db",  # Добавляем новую БД
+        }
 
         # Инициализация таблиц при первом запуске
         self._initialize_databases()
@@ -119,6 +123,52 @@ class DBManager:
                 logger.info("Matches database initialized")
             except Exception as e:
                 logger.error(f"Error initializing matches database: {e}")
+                raise
+            finally:
+                conn.close()
+
+            # Инициализация базы турниров
+            conn = sqlite3.connect(self._db_files["tournaments"])
+            try:
+                conn.execute(
+                    """
+                CREATE TABLE IF NOT EXISTS tournaments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT UNIQUE NOT NULL,
+                    slots INTEGER NOT NULL,
+                    started BOOLEAN DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+                )
+
+                conn.execute(
+                    """
+                CREATE TABLE IF NOT EXISTS tournament_participants (
+                    tournament_id INTEGER,
+                    user_id TEXT NOT NULL,
+                    player_name TEXT NOT NULL,
+                    FOREIGN KEY(tournament_id) REFERENCES tournaments(id),
+                    PRIMARY KEY(tournament_id, user_id)
+                )
+                """
+                )
+
+                conn.execute(
+                    """
+                CREATE TABLE IF NOT EXISTS tournament_bans (
+                    tournament_id INTEGER,
+                    user_id TEXT NOT NULL,
+                    FOREIGN KEY(tournament_id) REFERENCES tournaments(id),
+                    PRIMARY KEY(tournament_id, user_id)
+                )
+                """
+                )
+
+                conn.commit()
+                logger.info("Tournaments database initialized")
+            except Exception as e:
+                logger.error(f"Error initializing tournaments database: {e}")
                 raise
             finally:
                 conn.close()
