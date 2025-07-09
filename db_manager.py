@@ -40,12 +40,23 @@ class DBManager:
 
                     # Добавляем недостающие колонки
                     if "isbanned" not in columns:
-                        conn.execute("ALTER TABLE players ADD COLUMN isbanned BOOLEAN DEFAULT 0")
+                        conn.execute(
+                            "ALTER TABLE players ADD COLUMN isbanned BOOLEAN DEFAULT 0"
+                        )
                         logger.info("Added isbanned column to players table")
 
                     if "in_queue" not in columns:
-                        conn.execute("ALTER TABLE players ADD COLUMN in_queue INTEGER DEFAULT 0")
+                        conn.execute(
+                            "ALTER TABLE players ADD COLUMN in_queue INTEGER DEFAULT 0"
+                        )
                         logger.info("Added in_queue column to players table")
+
+                    # Добавляем новое поле для черного списка турниров
+                    if "isblacklisted" not in columns:
+                        conn.execute(
+                            "ALTER TABLE players ADD COLUMN isblacklisted BOOLEAN DEFAULT 0"
+                        )
+                        logger.info("Added isblacklisted column to players table")
 
                 # Создаем таблицу с актуальной структурой
                 conn.execute(
@@ -72,7 +83,8 @@ class DBManager:
                         ties_12min INTEGER DEFAULT 0,
                         currentmatches INTEGER DEFAULT 0,
                         in_queue INTEGER DEFAULT 0,
-                        isbanned BOOLEAN DEFAULT 0
+                        isbanned BOOLEAN DEFAULT 0,
+                        isblacklisted BOOLEAN DEFAULT 0
                     )
                     """
                 )

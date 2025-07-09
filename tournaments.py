@@ -9,45 +9,34 @@ from config import MODERATOR_ID
 class Tournaments(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.tournaments = {}  # Хранение данных о турнирах
+        self.tournaments = {}  # {name: {"banned": [], "participants": []}}
+
+    async def check_blacklist(self, user_id):
+        """Проверяет, находится ли пользователь в черном списке"""
+        result = db_manager.fetchone(
+            "players",
+            "SELECT isblacklisted FROM players WHERE discordid = ?",
+            (str(user_id),),
+        )
+        return result and result[0] == 1
 
     @commands.command(name="tournament")
     @commands.check(lambda ctx: ctx.author.id == MODERATOR_ID)
     async def create_tournament(self, ctx, name: str, slots: int):
         """Создает новый турнир (только для модераторов)"""
-        try:
-            if slots not in [8, 16, 32, 64]:
-                return await ctx.send(
-                    "❌ Число участников должно быть 8, 16, 32 или 64"
-                )
+        if slots not in [8, 16, 32, 64]:
+            return await ctx.send("❌ Число участников должно быть 8, 16, 32 или 64")
 
-            if name in self.tournaments:
-                return await ctx.send("❌ Турнир с таким именем уже существует")
+        if name in self.tournaments:
+            return await ctx.send("❌ Турнир с таким именем уже существует")
 
-            # Создаем каналы
-            tournament_data = await self.create_tournament_channels(ctx.guild, name)
-            self.tournaments[name] = tournament_data
+        # Создаем каналы
+        tournament_data = await self.create_tournament_channels(ctx.guild, name)
+        self.tournaments[name] = {**tournament_data, "slots": slots, "banned": []}
 
-            # Настраиваем канал регистрации
-            register_ch = tournament_data["register"]
-
-            # Отправляем начальные сообщения
-            participants_msg = await register_ch.send("**Участники турнира:**\nПусто")
-            banned_msg = await register_ch.send("**Забаненные игроки:**\nПусто")
-            blacklist_msg = await register_ch.send("**Черный список:**\nПусто")
-
-            # Сохраняем ID сообщений
-            self.tournaments[name]["participants_msg"] = participants_msg
-            self.tournaments[name]["banned_msg"] = banned_msg
-            self.tournaments[name]["blacklist_msg"] = blacklist_msg
-
-            await ctx.send(
-                f"✅ Турнир **{name}** создан! Регистрация в {register_ch.mention}"
-            )
-
-        except Exception as e:
-            await ctx.send(f"❌ Ошибка: {str(e)}")
-            print(f"[TOURNAMENT ERROR] {e}")
+        await ctx.send(
+            f"✅ Турнир **{name}** создан! Регистрация в {tournament_data['register'].mention}"
+        )
 
     async def create_tournament_channels(self, guild, name):
         """Создает ветку каналов для турнира"""
@@ -56,97 +45,275 @@ class Tournaments(commands.Cog):
             guild.me: discord.PermissionOverwrite(read_messages=True),
         }
 
-        # Создаем категорию
         category = await guild.create_category(name, overwrites=overwrites)
 
-        # Создаем каналы
-        info_ch = await guild.create_text_channel(f"{name}-info", category=category)
-        results_ch = await guild.create_text_channel(
-            f"{name}-results", category=category
-        )
-        matches_ch = await guild.create_text_channel(
-            f"{name}-matches", category=category
-        )
-        register_ch = await guild.create_text_channel(
-            f"{name}-register", category=category
+        channels = {
+            "info": await guild.create_text_channel(f"{name}-info", category=category),
+            "results": await guild.create_text_channel(
+                f"{name}-results", category=category
+            ),
+            "matches": await guild.create_text_channel(
+                f"{name}-matches", category=category
+            ),
+            "register": await guild.create_text_channel(
+                f"{name}-register", category=category
+            ),
+        }
+
+        return {"category": category, **channels, "participants": []}
+
+    @commands.command()
+    @commands.check(lambda ctx: ctx.author.id == MODERATOR_ID)
+    async def tban(self, ctx, member: discord.Member):
+        """Бан игрока в текущем турнире"""
+        tournament_name = ctx.channel.category.name
+
+        if tournament_name not in self.tournaments:
+            return await ctx.send("❌ Это не турнирный канал")
+
+        if member.id in self.tournaments[tournament_name]["banned"]:
+            return await ctx.send("❌ Игрок уже забанен в этом турнире")
+
+        self.tournaments[tournament_name]["banned"].append(member.id)
+
+        # Удаляем из участников если был зарегистрирован
+        self.tournaments[tournament_name]["participants"] = [
+            p
+            for p in self.tournaments[tournament_name]["participants"]
+            if p["id"] != member.id
+        ]
+
+        await ctx.send(f"✅ {member.mention} забанен в турнире")
+        await self.clean_user_messages(member.id, ctx.channel.category)
+
+    @commands.command()
+    @commands.check(lambda ctx: ctx.author.id == MODERATOR_ID)
+    async def untban(self, ctx, member: discord.Member):
+        """Разбан игрока в текущем турнире"""
+        tournament_name = ctx.channel.category.name
+
+        if tournament_name not in self.tournaments:
+            return await ctx.send("❌ Это не турнирный канал")
+
+        if member.id not in self.tournaments[tournament_name]["banned"]:
+            return await ctx.send("❌ Игрок не забанен в этом турнире")
+
+        self.tournaments[tournament_name]["banned"].remove(member.id)
+        await ctx.send(f"✅ {member.mention} разбанен в турнире")
+
+    @commands.command()
+    @commands.check(lambda ctx: ctx.author.id == MODERATOR_ID)
+    async def blacklist(self, ctx, member: discord.Member):
+        """Добавить игрока в черный список турниров"""
+        if await self.check_blacklist(member.id):
+            return await ctx.send("❌ Игрок уже в черном списке")
+
+        db_manager.execute(
+            "players",
+            "UPDATE players SET isblacklisted = 1 WHERE discordid = ?",
+            (str(member.id),),
         )
 
-        return {
-            "category": category,
-            "info": info_ch,
-            "results": results_ch,
-            "matches": matches_ch,
-            "register": register_ch,
-            "participants": [],
-            "banned": [],
-            "started": False,
-        }
+        # Удаляем из всех текущих турниров
+        for tournament in self.tournaments.values():
+            if member.id in tournament["participants"]:
+                tournament["participants"].remove(member.id)
+            if member.id not in tournament["banned"]:
+                tournament["banned"].append(member.id)
+
+        await ctx.send(f"✅ {member.mention} добавлен в черный список турниров")
+        await self.clean_user_messages(member.id)
+
+    @commands.command()
+    @commands.check(lambda ctx: ctx.author.id == MODERATOR_ID)
+    async def unblacklist(self, ctx, member: discord.Member):
+        """Удалить игрока из черного списка турниров"""
+        if not await self.check_blacklist(member.id):
+            return await ctx.send("❌ Игрок не в черном списке")
+
+        db_manager.execute(
+            "players",
+            "UPDATE players SET isblacklisted = 0 WHERE discordid = ?",
+            (str(member.id),),
+        )
+        await ctx.send(f"✅ {member.mention} удален из черного списка")
+
+    async def clean_user_messages(self, user_id, category=None):
+        """Удаляет сообщения пользователя в турнирных каналах"""
+        targets = [category] if category else self.tournaments.values()
+
+        for target in targets:
+            for channel in target["category"].channels:
+                try:
+                    async for message in channel.history(limit=100):
+                        if message.author.id == user_id:
+                            await message.delete()
+                            await asyncio.sleep(0.5)
+                except:
+                    continue
+
+    @commands.command(name="unregister")
+    @commands.check(lambda ctx: ctx.channel.name.endswith("-register"))
+    async def unregister(self, ctx):
+        """Позволяет игроку отменить регистрацию на турнир"""
+        tournament_name = ctx.channel.name.replace("-register", "")
+        user = ctx.author
+
+        if tournament_name not in self.tournaments:
+            await ctx.message.add_reaction("❌")
+            return await ctx.send("❌ Этот турнир не найден", delete_after=5)
+
+        tournament = self.tournaments[tournament_name]
+
+        # Проверяем, зарегистрирован ли игрок
+        player_index = next(
+            (i for i, p in enumerate(tournament["participants"]) if p["id"] == user.id),
+            None,
+        )
+
+        if player_index is None:
+            await ctx.message.add_reaction("❌")
+            return await ctx.send(
+                "❌ Вы не зарегистрированы в этом турнире", delete_after=5
+            )
+
+        # Удаляем игрока из списка участников
+        tournament["participants"].pop(player_index)
+        await ctx.message.add_reaction("✅")
+        await ctx.send(f"✅ Вы успешно отменили регистрацию на турнир", delete_after=5)
+        await self.update_lists(tournament_name)
+
+    async def update_lists(self, tournament_name):
+        """Обновляет списки участников и забаненных"""
+        tournament = self.tournaments[tournament_name]
+
+        # Форматируем списки
+        participants = (
+            "\n".join(
+                f"{i+1}. {p['mention']} ({p['name']})"
+                for i, p in enumerate(tournament["participants"])
+            )
+            or "Пусто"
+        )
+
+        banned = "\n".join(f"<@{uid}>" for uid in tournament["banned"]) or "Пусто"
+
+        # Получаем черный список из БД
+        blacklisted = db_manager.fetchall(
+            "players", "SELECT discordid FROM players WHERE isblacklisted = 1"
+        )
+        blacklist_mentions = "\n".join(f"<@{row[0]}>" for row in blacklisted) or "Пусто"
+
+        # Обновляем сообщения
+        await tournament["participants_msg"].edit(
+            content=f"**Участники турнира ({len(tournament['participants'])}/{tournament['slots']}):**\n{participants}"
+        )
+        await tournament["banned_msg"].edit(content=f"**Забаненные игроки:**\n{banned}")
+        await tournament["blacklist_msg"].edit(
+            content=f"**Черный список:**\n{blacklist_mentions}"
+        )
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        """Обработка регистрации на турнир"""
         if message.author.bot:
             return
 
         if not message.channel.name.endswith("-register"):
             return
 
-        if not message.content.startswith(".register"):
+        # Удаляем все сообщения кроме команд register/unregister
+        if not message.content.startswith((".register", ".unregister")):
             try:
                 await message.delete()
             except:
                 pass
             return
 
-        await self.process_registration(message)
+        # Обрабатываем команды
+        if message.content.startswith(".register"):
+            await self.process_registration(message)
+        elif message.content.startswith(".unregister"):
+            ctx = await self.bot.get_context(message)
+            await self.unregister(ctx)
 
     async def process_registration(self, message):
-        """Обрабатывает команду .register"""
+        """Обрабатывает регистрацию на турнир"""
         tournament_name = message.channel.name.replace("-register", "")
+        user = message.author
 
         if tournament_name not in self.tournaments:
             return
 
-        user = message.author
         tournament = self.tournaments[tournament_name]
 
-        # Проверка, что пользователь не зарегистрирован
-        if any(p["id"] == user.id for p in tournament["participants"]):
+        if tournament.get("started", False):
             await message.add_reaction("❌")
-            return await message.author.send("❌ Вы уже зарегистрированы!")
+            return await user.send("❌ Регистрация закрыта - турнир уже начался")
 
-        # Проверка бана в боте
-        player_data = db_manager.fetchone(
-            "players",
-            "SELECT playername, isbanned FROM players WHERE discordid = ?",
-            (str(user.id),),
-        )
+        # Проверка условий
+        checks = {
+            "not_in_db": not self.is_user_verified(
+                user.id
+            ),  # Сначала проверяем наличие в базе
+            "blacklisted": await self.check_blacklist(user.id),
+            "banned": user.id in tournament["banned"],
+            "registered": any(p["id"] == user.id for p in tournament["participants"]),
+            "globally_banned": self.is_user_globally_banned(user.id),  # Новая проверка
+        }
 
-        if not player_data or player_data[1] == 1:
+        if any(checks.values()):
+            reason = (
+                "не найден в базе игроков"
+                if checks["not_in_db"]
+                else (
+                    "в черном списке"
+                    if checks["blacklisted"]
+                    else (
+                        "забанен в этом турнире"
+                        if checks["banned"]
+                        else (
+                            "уже зарегистрирован"
+                            if checks["registered"]
+                            else "забанен глобально"
+                        )
+                    )
+                )  # checks["globally_banned"]
+            )
             await message.add_reaction("❌")
-            return await message.author.send("❌ Вы не верифицированы или забанены!")
+            try:
+                await user.send(f"❌ Регистрация отклонена: {reason}")
+            except:
+                pass
+            return
 
         # Регистрация
+        player_name = db_manager.fetchone(
+            "players",
+            "SELECT playername FROM players WHERE discordid = ?",
+            (str(user.id),),
+        )[0]
+
         tournament["participants"].append(
-            {"id": user.id, "name": player_data[0], "mention": user.mention}
+            {"id": user.id, "name": player_name, "mention": user.mention}
         )
 
         await message.add_reaction("✅")
-        await self.update_lists(tournament_name)
 
-    async def update_lists(self, tournament_name):
-        """Обновляет списки участников"""
-        tournament = self.tournaments[tournament_name]
+        # Проверка набора участников
+        if len(tournament["participants"]) >= tournament["slots"]:
+            await tournament["register"].send(
+                "🎉 Набрано достаточное количество участников! "
+                "Модератор может начать турнир командой `.tstart`"
+            )
 
-        participants = (
-            "\n".join([p["mention"] for p in tournament["participants"]]) or "Пусто"
+    def is_user_verified(self, user_id):
+        """Проверяет, есть ли игрок в базе (независимо от бана)"""
+        result = db_manager.fetchone(
+            "players",
+            "SELECT 1 FROM players WHERE discordid = ?",
+            (str(user_id),),
         )
-        banned = "\n".join([f"<@{uid}>" for uid in tournament["banned"]]) or "Пусто"
-
-        await tournament["participants_msg"].edit(
-            content=f"**Участники турнира:**\n{participants}"
-        )
-        await tournament["banned_msg"].edit(content=f"**Забаненные игроки:**\n{banned}")
+        return result is not None
 
 
 async def setup(bot):
