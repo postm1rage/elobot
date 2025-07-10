@@ -70,25 +70,33 @@ class Tour:
         p1_data = {
             "discord_id": player1["id"],
             "nickname": player1["name"],
-            "rating": db_manager.fetchone(
-                "players",
-                "SELECT currentelo FROM players WHERE discordid = ?",
-                (str(player1["id"]),)
-            )[0] if player1["id"] != 0 else 0,
+            "rating": (
+                db_manager.fetchone(
+                    "players",
+                    "SELECT currentelo FROM players WHERE discordid = ?",
+                    (str(player1["id"]),),
+                )[0]
+                if player1["id"] != 0
+                else 0
+            ),
             "channel_id": None,
-            "join_time": datetime.now()
+            "join_time": datetime.now(),
         }
-        
+
         p2_data = {
             "discord_id": player2["id"],
             "nickname": player2["name"],
-            "rating": db_manager.fetchone(
-                "players",
-                "SELECT currentelo FROM players WHERE discordid = ?",
-                (str(player2["id"]),)
-            )[0] if player2["id"] != 0 else 0,
+            "rating": (
+                db_manager.fetchone(
+                    "players",
+                    "SELECT currentelo FROM players WHERE discordid = ?",
+                    (str(player2["id"]),),
+                )[0]
+                if player2["id"] != 0
+                else 0
+            ),
             "channel_id": None,
-            "join_time": datetime.now()
+            "join_time": datetime.now(),
         }
 
         # Если один из игроков - emptyslot, автоматически присуждаем победу
@@ -99,23 +107,23 @@ class Tour:
                 p1_data,
                 p2_data,
                 matchtype=2,
-                tournament_id=self.name
+                tournament_id=self.name,
             )
-            
+
             # Помечаем матч как завершенный
             winner_score = 1 if winner["id"] == player1["id"] else 0
             loser_score = 1 - winner_score
-            
+
             db_manager.execute(
-                'matches',
+                "matches",
                 """
                 UPDATE matches 
                 SET player1score = ?, player2score = ?, isover = 1, isverified = 1
                 WHERE matchid = ?
                 """,
-                (winner_score, loser_score, match_id)
+                (winner_score, loser_score, match_id),
             )
-            
+
             # Добавляем победителя
             self.winners.append(winner)
             return match_id
@@ -126,11 +134,18 @@ class Tour:
             """INSERT INTO matches 
             (mode, player1, player2, start_time, matchtype, tournament_id) 
             VALUES (?, ?, ?, ?, ?, ?)""",
-            (MODES["station5f"], player1["name"], player2["name"], datetime.now(), 2, self.name)
+            (
+                MODES["station5f"],
+                player1["name"],
+                player2["name"],
+                datetime.now(),
+                2,
+                self.name,
+            ),
         )
         match_id = cursor.lastrowid
         db_manager.get_connection("matches").commit()
-        
+
         # Отправляем уведомления только реальным игрокам
         if player1["id"] != 0:
             try:
@@ -138,63 +153,50 @@ class Tour:
                 await self.send_match_notification(match_id, player1, player2, user)
             except Exception as e:
                 print(f"Не удалось отправить уведомление игроку {player1['name']}: {e}")
-        
+
         if player2["id"] != 0:
             try:
                 user = await self.bot.fetch_user(player2["id"])
                 await self.send_match_notification(match_id, player2, player1, user)
             except Exception as e:
                 print(f"Не удалось отправить уведомление игроку {player2['name']}: {e}")
-        
+
         return match_id
 
     async def send_round_info(self):
-        """Отправляет информацию о текущем раунде в канал"""
-        # Находим канал matches
         channel = discord.utils.get(
-            self.bot.get_all_channels(),
-            name=f"{self.name}-matches"
+            self.bot.get_all_channels(), name=f"{self.name}-matches"
         )
-        
         if not channel:
             print(f"⚠ Канал {self.name}-matches не найден")
             return
 
-        # Получаем последние созданные матчи
         matches = db_manager.fetchall(
             "matches",
-            """SELECT matchid, player1, player2 
+            """SELECT matchid, player1, player2, isover 
             FROM matches 
             WHERE tournament_id = ? 
             ORDER BY matchid DESC 
             LIMIT ?""",
-            (self.name, len(self.matches))
+            (self.name, len(self.matches)),
         )
 
         embed = discord.Embed(
             title=f"🎮 Турнир {self.name} - Раунд {self.current_round}",
             description="Список матчей текущего раунда:",
-            color=discord.Color.gold()
+            color=discord.Color.gold(),
         )
 
         for match in matches:
-            match_id, player1, player2 = match
+            match_id, player1, player2, isover = match
+            status = "Завершен" if isover else "В процессе"
             embed.add_field(
-                name=f"Матч #{match_id}",
+                name=f"Матч #{match_id} ({status})",
                 value=f"{player1} vs {player2}",
-                inline=False
+                inline=False,
             )
 
         embed.set_footer(text=f"Всего матчей: {len(matches)}")
-        
-        # Удаляем старые сообщения бота
-        async for message in channel.history(limit=10):
-            if message.author == self.bot.user:
-                try:
-                    await message.delete()
-                except:
-                    continue
-        
         await channel.send(embed=embed)
 
     async def check_round_completion(self):
@@ -250,31 +252,30 @@ class Tour:
         """Завершает турнир и объявляет победителя"""
         self.is_finished = True
         winner = self.winners[0]
-        
+
         # Создаем embed для объявления победителя
         embed = discord.Embed(
             title=f"🏆 Турнир {self.name} завершен!",
             description=f"Поздравляем победителя:\n**{winner['name']}**",
-            color=discord.Color.gold()
+            color=discord.Color.gold(),
         )
-        
+
         # Отправляем в канал результатов
         results_channel = discord.utils.get(
-            self.bot.get_all_channels(),
-            name=f"{self.name}-results"
+            self.bot.get_all_channels(), name=f"{self.name}-results"
         )
-        
+
         if results_channel:
             await results_channel.send(embed=embed)
-        
+
         # Отправляем личное сообщение победителю
-        if winner['id'] != 0:  # Если это не пустой слот
+        if winner["id"] != 0:  # Если это не пустой слот
             try:
-                user = await self.bot.fetch_user(winner['id'])
+                user = await self.bot.fetch_user(winner["id"])
                 winner_embed = discord.Embed(
                     title=f"🏆 Победа в турнире {self.name}!",
                     description="Поздравляем с победой!",
-                    color=discord.Color.gold()
+                    color=discord.Color.gold(),
                 )
                 await user.send(embed=winner_embed)
             except Exception as e:
@@ -318,22 +319,22 @@ class Tour:
         self.winners.append(winner)
 
         return True
-    
+
     async def send_match_notification(self, match_id, player, opponent, user):
         """Отправляет уведомление о матче конкретному игроку"""
         embed = discord.Embed(
             title=f"🎮 Турнирный матч | Раунд {self.current_round}",
             description=f"Турнир: **{self.name}**\nMatch ID: `{match_id}`",
-            color=discord.Color.gold()
+            color=discord.Color.gold(),
         )
-        
+
         embed.add_field(name="Ваш соперник", value=opponent["name"], inline=False)
         embed.add_field(
-            name="Инструкции", 
+            name="Инструкции",
             value="После завершения матча **победитель** должен отправить результат командой:\n"
-                f"`.result {match_id} <свой_счет>-<счет_соперника>`\n"
-                "Пример: `.result {match_id} 5-3`",
-            inline=False
+            f"`.result {match_id} <свой_счет>-<счет_соперника>`\n"
+            "Пример: `.result {match_id} 5-3`",
+            inline=False,
         )
-        
+
         await user.send(embed=embed)

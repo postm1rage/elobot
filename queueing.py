@@ -475,6 +475,12 @@ class PlayerConfirmationView(View):
             player2 = result_data["player2"]
             mode = result_data["mode"]
 
+            # Получаем тип матча
+            matchtype = db_manager.fetchone(
+                "matches",
+                "SELECT matchtype FROM matches WHERE matchid = ?",
+                (match_id,),
+            )[0]
             # Парсим счет
             score1, score2 = map(int, scores.split("-"))
 
@@ -507,9 +513,16 @@ class PlayerConfirmationView(View):
                 (loser,),
             )
 
-            # Обновляем ELO
-            update_player_rating(winner, new_rating_winner, mode)
-            update_player_rating(loser, new_rating_loser, mode)
+            # Обновляем ELO только для обычных матчей
+            if matchtype == 1:
+                rating_winner = get_player_rating(winner, mode)
+                rating_loser = get_player_rating(loser, mode)
+                new_rating_winner, new_rating_loser = calculate_elo(rating_winner, rating_loser, 1)
+                update_player_rating(winner, new_rating_winner, mode)
+                update_player_rating(loser, new_rating_loser, mode)
+                elo_change = f"\n\n**Изменения ELO:**\n{winner}: {rating_winner} → **{new_rating_winner}**\n{loser}: {rating_loser} → **{new_rating_loser}**"
+            else:
+                elo_change = ""
 
             # Обновляем запись матча
             db_manager.execute(
@@ -526,10 +539,8 @@ class PlayerConfirmationView(View):
                     f"**Режим:** {mode_name}\n"
                     f"**Игроки:** {player1} vs {player2}\n"
                     f"**Счет:** {score1} - {score2}\n"
-                    f"**Победитель:** {winner}\n\n"
-                    f"**Изменения ELO:**\n"
-                    f"{winner}: {rating_winner} → **{new_rating_winner}** (+{new_rating_winner - rating_winner})\n"
-                    f"{loser}: {rating_loser} → **{new_rating_loser}** ({new_rating_loser - rating_loser})"
+                    f"**Победитель:** {winner}"
+                    f"{elo_change}"
                 ),
                 color=discord.Color.green(),
             )
@@ -1400,6 +1411,56 @@ async def create_match(mode, player1, player2, matchtype=1, tournament_id=None):
             f"[MATCH] Создание матча: {player1['nickname']} vs {player2['nickname']} ({MODE_NAMES[mode]})"
         )
 
+        # Проверяем, является ли один из игроков "emptyslot"
+        is_player1_empty = player1["nickname"].startswith("emptyslot")
+        is_player2_empty = player2["nickname"].startswith("emptyslot")
+
+        # Если оба "emptyslot", матч не создаем (турнирная логика обработает это отдельно)
+        if is_player1_empty and is_player2_empty:
+            print(f"[MATCH] Оба игрока — emptyslot, матч не создается")
+            return None
+
+        # Обновляем статус в базе только для реальных игроков
+        if not is_player1_empty and not is_player2_empty:
+            db_manager.execute(
+                "players",
+                "UPDATE players SET in_queue = 0 WHERE playername IN (?, ?)",
+                (player1["nickname"], player2["nickname"]),
+            )
+
+        # Создаем запись о матче и получаем ID
+        cursor = db_manager.execute(
+            "matches",
+            """
+            INSERT INTO matches (mode, player1, player2, start_time, matchtype, tournament_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                mode,
+                player1["nickname"],
+                player2["nickname"],
+                datetime.now(),
+                matchtype,
+                tournament_id,
+            ),
+        )
+        match_id = cursor.lastrowid
+
+        # Если один из игроков — "emptyslot", автоматически завершаем матч
+        if matchtype == 2 and (is_player1_empty or is_player2_empty):
+            winner = player2["nickname"] if is_player1_empty else player1["nickname"]
+            db_manager.execute(
+                "matches",
+                """
+                UPDATE matches 
+                SET player1score = ?, player2score = ?, isover = 1, isverified = 1
+                WHERE matchid = ?
+                """,
+                (0 if is_player1_empty else 1, 1 if is_player1_empty else 0, match_id),
+            )
+            print(f"[MATCH] Матч с emptyslot автоматически завершен в пользу {winner}")
+            return match_id
+
         # Обновляем статус в базе
         db_manager.execute(
             "players",
@@ -1538,13 +1599,19 @@ async def check_expired_matches(bot):
 
             now = datetime.now()
             one_hour_ago = now - timedelta(hours=1)
+            
             print(
                 f"[{now.strftime('%H:%M:%S')}] Проверка матчей старше {one_hour_ago.strftime('%H:%M:%S')}"
             )
 
+            # Исключаем турнирные матчи (matchtype=2)
             expired_matches = db_manager.execute(
                 "matches",
-                "SELECT matchid, mode, player1, player2, start_time FROM matches WHERE isover = 0 AND start_time < ?",
+                """
+                SELECT matchid, mode, player1, player2, start_time 
+                FROM matches 
+                WHERE isover = 0 AND start_time < ? AND matchtype = 1
+                """,
                 (one_hour_ago,),
             ).fetchall()
 
