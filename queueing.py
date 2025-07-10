@@ -1278,17 +1278,14 @@ async def find_match():
 
         try:
             # Получаем списки игроков в активных матчах по типам
-            active_players = {
-                1: set(),  # Обычные матчи
-                2: set()   # Турнирные матчи
-            }
+            active_players = {1: set(), 2: set()}  # Обычные матчи  # Турнирные матчи
 
             # Заполняем множества активных игроков для каждого типа матча
             for match_type in [1, 2]:
                 matches = db_manager.fetchall(
-                    'matches',
+                    "matches",
                     "SELECT player1, player2 FROM matches WHERE isover = 0 AND matchtype = ?",
-                    (match_type,)
+                    (match_type,),
                 )
                 for player1, player2 in matches:
                     active_players[match_type].add(player1)
@@ -1298,18 +1295,17 @@ async def find_match():
             for mode in [MODES["station5f"], MODES["mots"], MODES["12min"]]:
                 # Фильтруем игроков, исключая тех, кто уже в обычном матче
                 queue = [
-                    p for p in queues[mode] 
-                    if p["nickname"] not in active_players[1]
+                    p for p in queues[mode] if p["nickname"] not in active_players[1]
                 ]
-                
+
                 if len(queue) >= 2:
                     try:
                         # Сортируем по времени в очереди
                         queue.sort(key=lambda x: x["join_time"])
-                        
+
                         # Берем первого игрока в очереди
                         player1 = queue.pop(0)
-                        
+
                         # Ищем наиболее подходящего соперника по рейтингу
                         min_diff = float("inf")
                         candidate = None
@@ -1332,10 +1328,11 @@ async def find_match():
 
             # Обработка режима "Any" (0)
             queue_any = [
-                p for p in queues[MODES["any"]] 
+                p
+                for p in queues[MODES["any"]]
                 if p["nickname"] not in active_players[1]
             ]
-            
+
             if queue_any:
                 try:
                     # Поиск в других режимах (1, 2, 3)
@@ -1346,10 +1343,11 @@ async def find_match():
 
                     for mode in [MODES["station5f"], MODES["mots"], MODES["12min"]]:
                         queue = [
-                            p for p in queues[mode] 
+                            p
+                            for p in queues[mode]
                             if p["nickname"] not in active_players[1]
                         ]
-                        
+
                         for idx, p in enumerate(queue):
                             diff = abs(queue_any[0]["rating"] - p["rating"])
                             if diff < min_diff:
@@ -1981,7 +1979,7 @@ def setup(bot):
 
         # Проверяем существование матча
         match_data = db_manager.execute(
-            'matches',
+            "matches",
             "SELECT player1, player2, mode, matchtype FROM matches WHERE matchid = ?",
             (match_id,),
         ).fetchone()
@@ -2072,6 +2070,37 @@ def setup(bot):
             await ctx.send(
                 "❌ Не удалось отправить запрос подтверждения оппоненту. Обратитесь к администратору."
             )
+
+        if matchtype == 2:
+            # Получаем название турнира из БД
+            tournament_data = db_manager.fetchone(
+                "matches",
+                "SELECT tournament_id FROM matches WHERE matchid = ?",
+                (match_id,),
+            )
+
+            if tournament_data:
+                tournament_name = tournament_data[0]
+                results_channel = discord.utils.get(
+                    bot.get_all_channels(), name=f"{tournament_name}-results"
+                )
+
+                if results_channel:
+                    # Создаем embed для турнирного канала
+                    embed = discord.Embed(
+                        title=f"🏆 Турнирный матч завершен | ID: {match_id}",
+                        description=(
+                            f"**Игроки:** {player1} vs {player2}\n"
+                            f"**Счет:** {scores}\n"
+                            f"**Победитель:** {player1 if int(scores.split('-')[0]) > int(scores.split('-')[1]) else player2}"
+                        ),
+                        color=discord.Color.green(),
+                    )
+
+                    if ctx.message.attachments:
+                        embed.set_image(url=ctx.message.attachments[0].url)
+
+                    await results_channel.send(embed=embed)
 
     @bot.command()
     async def giveup(ctx):

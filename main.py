@@ -5,6 +5,7 @@ from datetime import datetime
 from role_manager import setup_role_manager
 from nickname_updater import setup_nickname_updater
 from tournaments import setup as setup_tournaments
+import tournament_test
 from config import (
     bot,
     MODERATOR_ID,
@@ -573,6 +574,7 @@ setup_verification(bot)
 setup_nickname_updater(bot)
 setup_role_manager(bot)
 setup_ban(bot)
+tournament_test.setup(bot)
 
 
 @bot.check

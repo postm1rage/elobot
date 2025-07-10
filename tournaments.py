@@ -6,6 +6,7 @@ from db_manager import db_manager
 from config import MODERATOR_ID, MODES, MODE_NAMES
 from queueing import create_match
 from datetime import datetime
+from tour import Tour
 
 
 class Tournaments(commands.Cog):
@@ -206,20 +207,16 @@ class Tournaments(commands.Cog):
         
         tournament = self.tournaments[tournament_name]
         
-        if tournament["started"]:
+        if tournament.get("started", False):
             return await ctx.send("❌ Турнир уже начат")
         
-        participants = tournament["participants"]
-        slots = tournament["slots"]
-        
-        # Заполняем пустые слоты
-        while len(participants) < slots:
-            empty_slot = {
-                "id": 0,
-                "name": f"emptyslot{len(participants)+1}",
-                "mention": "Пустой слот"
-            }
-            participants.append(empty_slot)
+        # Создаем экземпляр турнира
+        self.active_tournament = Tour(
+            bot=self.bot,
+            tournament_name=tournament_name,
+            participants=tournament["participants"],
+            slots=tournament["slots"]
+        )
         
         # Обновляем статус турнира в БД
         db_manager.execute(
@@ -230,10 +227,22 @@ class Tournaments(commands.Cog):
         
         tournament["started"] = True
         
-        # Создаем матчи первого раунда
-        await self.create_first_round(tournament)
+        # Начинаем первый раунд
+        await self.active_tournament.start_round()
+        await ctx.send("✅ Турнир начат! Первый раунд создан.")
+
+    @commands.command()
+    @commands.check(lambda ctx: ctx.author.id == MODERATOR_ID)
+    async def setwinner(self, ctx, match_id: int, winner_name: str):
+        """Устанавливает победителя матча вручную"""
+        if not hasattr(self, 'active_tournament'):
+            return await ctx.send("❌ Нет активного турнира")
         
-        await ctx.send("✅ Турнир начат! Матчи первого раунда созданы.")
+        success = await self.active_tournament.set_winner(match_id, winner_name)
+        if success:
+            await ctx.send(f"✅ Победитель матча {match_id} установлен: {winner_name}")
+        else:
+            await ctx.send("❌ Не удалось установить победителя. Проверьте ID матча и никнейм")
 
     async def create_first_round(self, tournament):
         """Создает матчи первого раунда турнира"""

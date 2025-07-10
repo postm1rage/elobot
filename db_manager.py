@@ -119,7 +119,11 @@ class DBManager:
                             "ALTER TABLE matches ADD COLUMN matchtype INTEGER DEFAULT 1"
                         )
                         logger.info("Added matchtype column to matches table")
-
+                    if "tournament_id" not in columns:
+                        conn.execute(
+                            "ALTER TABLE matches ADD COLUMN tournament_id INTEGER DEFAULT 0"
+                        )
+                        logger.info("Added matchtype column to matches table")
                 # Создаем таблицу с актуальной структурой
                 conn.execute(
                     """
@@ -135,7 +139,7 @@ class DBManager:
                         map TEXT,
                         start_time DATETIME,
                         matchtype INTEGER DEFAULT 1,
-                        tournament_id INTEGER
+                        tournament_id INTEGER DEFAULT 0
                     )
                     """
                 )
