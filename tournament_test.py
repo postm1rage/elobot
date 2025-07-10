@@ -233,15 +233,22 @@ async def simulate_matches():
         (TEST_TOURNAMENT_NAME,)
     )[0]
     
-    # Получаем участников турнира
+    # Получаем участников текущего раунда
     participants = test_db.fetchall(
         "SELECT user_id, player_name FROM tournament_participants WHERE tournament_id = ?",
         (tournament_id,)
     )
     
+    winners = []  # Будем собирать победителей для следующего раунда
+    
     # Создаем пары для матчей
     for i in range(0, len(participants), 2):
         if i+1 >= len(participants):
+            # Если нечетное количество участников, победитель проходит автоматически
+            winners.append({
+                "id": participants[i][0],
+                "name": participants[i][1]
+            })
             continue
             
         player1_id, player1_name = participants[i]
@@ -255,7 +262,7 @@ async def simulate_matches():
             VALUES (?, ?, ?, ?, ?, ?)""",
             (1, player1_name, player2_name, datetime.now(), 2, TEST_TOURNAMENT_NAME)
         )
-        match_id = cursor.lastrowid  # Получаем ID сразу после вставки
+        match_id = cursor.lastrowid
         test_db.conn.commit()
         
         # Случайный результат (5-0, 5-1, 5-2, 5-3)
@@ -264,6 +271,13 @@ async def simulate_matches():
         
         # Определяем победителя
         winner = player1_name if score1 > score2 else player2_name
+        winner_id = player1_id if winner == player1_name else player2_id
+        
+        # Добавляем победителя в список для следующего раунда
+        winners.append({
+            "id": winner_id,
+            "name": winner
+        })
         
         # Обновляем матч
         test_db.execute(
@@ -286,7 +300,20 @@ async def simulate_matches():
         )
         
         print(f"Match {match_id}: {player1_name} {score1}-{score2} {player2_name} -> Winner: {winner}")
-
+    
+    # Обновляем список участников для следующего раунда - только победители
+    test_db.execute(
+        "DELETE FROM tournament_participants WHERE tournament_id = ?",
+        (tournament_id,)
+    )
+    
+    for winner in winners:
+        test_db.execute(
+            """INSERT INTO tournament_participants 
+            (tournament_id, user_id, player_name) 
+            VALUES (?, ?, ?)""",
+            (tournament_id, winner["id"], winner["name"])
+        )
 
 async def check_tournament_progress():
     """Проверяет прогресс турнира"""

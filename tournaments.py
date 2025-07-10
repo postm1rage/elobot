@@ -173,24 +173,31 @@ class Tournaments(commands.Cog):
                     pass
 
     async def create_tournament_channels(self, guild, name):
-        """Создает ветку каналов для турнира"""
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(read_messages=False),
-            guild.me: discord.PermissionOverwrite(read_messages=True),
-        }
-
-        category = await guild.create_category(name, overwrites=overwrites)
-
+        """Создает публичные каналы для турнира"""
+        # Создаем категорию с стандартными правами (публичную)
+        category = await guild.create_category(name)
+        
+        # Создаем текстовые каналы с стандартными правами
         channels = {
-            "info": await guild.create_text_channel(f"{name}-info", category=category),
+            "info": await guild.create_text_channel(
+                f"{name}-info", 
+                category=category,
+                topic=f"Информация о турнире {name}"
+            ),
             "results": await guild.create_text_channel(
-                f"{name}-results", category=category
+                f"{name}-results", 
+                category=category,
+                topic=f"Результаты турнира {name}"
             ),
             "matches": await guild.create_text_channel(
-                f"{name}-matches", category=category
+                f"{name}-matches", 
+                category=category,
+                topic=f"Турнирные матчи {name}"
             ),
             "register": await guild.create_text_channel(
-                f"{name}-register", category=category
+                f"{name}-register", 
+                category=category,
+                topic=f"Регистрация на турнир {name}"
             ),
         }
 
@@ -234,15 +241,94 @@ class Tournaments(commands.Cog):
     @commands.command()
     @commands.check(lambda ctx: ctx.author.id == MODERATOR_ID)
     async def setwinner(self, ctx, match_id: int, winner_name: str):
-        """Устанавливает победителя матча вручную"""
-        if not hasattr(self, 'active_tournament'):
-            return await ctx.send("❌ Нет активного турнира")
-        
-        success = await self.active_tournament.set_winner(match_id, winner_name)
-        if success:
-            await ctx.send(f"✅ Победитель матча {match_id} установлен: {winner_name}")
-        else:
-            await ctx.send("❌ Не удалось установить победителя. Проверьте ID матча и никнейм")
+        """Вручную устанавливает победителя матча с проверками"""
+        try:
+            # 1. Проверяем существование матча
+            match_data = db_manager.fetchone(
+                "matches",
+                """SELECT player1, player2, tournament_id, isover 
+                FROM matches 
+                WHERE matchid = ? AND matchtype = 2""",  # Только турнирные матчи
+                (match_id,)
+            )
+            
+            if not match_data:
+                return await ctx.send(f"❌ Матч с ID {match_id} не найден или не является турнирным")
+            
+            player1, player2, tournament_id, isover = match_data
+            
+            # 2. Проверяем, что матч еще не завершен
+            if isover == 1:
+                return await ctx.send("❌ Этот матч уже завершен")
+            
+            # 3. Проверяем, что указанный победитель действительно участвовал в матче
+            if winner_name not in [player1, player2]:
+                return await ctx.send(f"❌ Игрок {winner_name} не участвовал в матче {match_id}")
+            
+            # 4. Получаем информацию о турнире
+            tournament = db_manager.fetchone(
+                "tournaments",
+                "SELECT name FROM tournaments WHERE id = ?",
+                (tournament_id,)
+            )
+            tournament_name = tournament[0] if tournament else "Неизвестный турнир"
+            
+            # 5. Определяем счет
+            if winner_name == player1:
+                score1, score2 = 1, 0
+            else:
+                score1, score2 = 0, 1
+            
+            # 6. Обновляем матч в базе
+            db_manager.execute(
+                "matches",
+                """UPDATE matches 
+                SET player1score = ?, player2score = ?, isover = 1, isverified = 1 
+                WHERE matchid = ?""",
+                (score1, score2, match_id)
+            )
+            
+            # 7. Обновляем статистику игроков
+            db_manager.execute(
+                "players",
+                "UPDATE players SET wins = wins + 1 WHERE playername = ?",
+                (winner_name,)
+            )
+            
+            loser_name = player2 if winner_name == player1 else player1
+            db_manager.execute(
+                "players",
+                "UPDATE players SET losses = losses + 1 WHERE playername = ?",
+                (loser_name,)
+            )
+            
+            # 8. Отправляем подтверждение
+            embed = discord.Embed(
+                title="✅ Победитель установлен",
+                description=f"В матче #{match_id} турнира **{tournament_name}**",
+                color=discord.Color.green()
+            )
+            embed.add_field(name="Победитель", value=winner_name, inline=True)
+            embed.add_field(name="Проигравший", value=loser_name, inline=True)
+            embed.add_field(name="Счет", value=f"{score1}-{score2}", inline=False)
+            await ctx.send(embed=embed)
+            
+            # 9. Уведомляем игроков
+            try:
+                winner_id = db_manager.fetchone(
+                    "players",
+                    "SELECT discordid FROM players WHERE playername = ?",
+                    (winner_name,)
+                )[0]
+                if winner_id:
+                    user = await self.bot.fetch_user(int(winner_id))
+                    await user.send(f"🎉 Вам присвоена победа в матче #{match_id} турнира {tournament_name}")
+            except Exception as e:
+                print(f"Ошибка уведомления победителя: {e}")
+            
+        except Exception as e:
+            print(f"Ошибка в setwinner: {e}")
+            await ctx.send("❌ Произошла внутренняя ошибка при обработке команды")
 
     async def create_first_round(self, tournament):
         """Создает матчи первого раунда турнира"""
@@ -692,6 +778,26 @@ class Tournaments(commands.Cog):
             (str(user_id),),
         )
         return result and result[0] == 1
+    
+    async def is_active_tournament_match(self, match_id):
+        """Проверяет, принадлежит ли матч активному турниру"""
+        match_data = db_manager.fetchone(
+            "matches",
+            """SELECT tournament_id FROM matches 
+            WHERE matchid = ? AND matchtype = 2 AND isover = 0""",
+            (match_id,)
+        )
+        if not match_data:
+            return False
+        
+        tournament_id = match_data[0]
+        tournament = db_manager.fetchone(
+            "tournaments",
+            "SELECT started FROM tournaments WHERE id = ?",
+            (tournament_id,)
+        )
+        
+        return tournament and tournament[0] == 1  # Турнир должен быть начат
 
 
 async def setup(bot):

@@ -139,7 +139,7 @@ class DBManager:
                         map TEXT,
                         start_time DATETIME,
                         matchtype INTEGER DEFAULT 1,
-                        tournament_id INTEGER DEFAULT 0
+                        tournament_id TEXT DEFAULT 0
                     )
                     """
                 )
