@@ -103,6 +103,24 @@ class DBManager:
             # Инициализация базы матчей
             conn = sqlite3.connect(self._db_files["matches"])
             try:
+                # Проверяем существование таблицы
+                table_exists = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='matches'"
+                ).fetchone()
+
+                if table_exists:
+                    # Проверяем существующие колонки
+                    cursor = conn.execute("PRAGMA table_info(matches)")
+                    columns = {column[1]: column for column in cursor.fetchall()}
+
+                    # Добавляем недостающие колонки
+                    if "matchtype" not in columns:
+                        conn.execute(
+                            "ALTER TABLE matches ADD COLUMN matchtype INTEGER DEFAULT 1"
+                        )
+                        logger.info("Added matchtype column to matches table")
+
+                # Создаем таблицу с актуальной структурой
                 conn.execute(
                     """
                     CREATE TABLE IF NOT EXISTS matches (
@@ -115,12 +133,14 @@ class DBManager:
                         player2score INTEGER,
                         isverified INTEGER DEFAULT 0,
                         map TEXT,
-                        start_time DATETIME
+                        start_time DATETIME,
+                        matchtype INTEGER DEFAULT 1,
+                        tournament_id INTEGER
                     )
                     """
                 )
                 conn.commit()
-                logger.info("Matches database initialized")
+                logger.info("Matches database initialized/updated")
             except Exception as e:
                 logger.error(f"Error initializing matches database: {e}")
                 raise

@@ -3,7 +3,9 @@ from discord.ext import commands
 from discord.utils import get
 import asyncio
 from db_manager import db_manager
-from config import MODERATOR_ID
+from config import MODERATOR_ID, MODES, MODE_NAMES
+from queueing import create_match
+from datetime import datetime
 
 
 class Tournaments(commands.Cog):
@@ -192,6 +194,114 @@ class Tournaments(commands.Cog):
         }
 
         return {"category": category, **channels}
+
+    @commands.command()
+    @commands.check(lambda ctx: ctx.author.id == MODERATOR_ID)
+    async def tstart(self, ctx):
+        """Начинает турнир (только для модераторов)"""
+        tournament_name = ctx.channel.category.name
+        
+        if tournament_name not in self.tournaments:
+            return await ctx.send("❌ Турнир не найден")
+        
+        tournament = self.tournaments[tournament_name]
+        
+        if tournament["started"]:
+            return await ctx.send("❌ Турнир уже начат")
+        
+        participants = tournament["participants"]
+        slots = tournament["slots"]
+        
+        # Заполняем пустые слоты
+        while len(participants) < slots:
+            empty_slot = {
+                "id": 0,
+                "name": f"emptyslot{len(participants)+1}",
+                "mention": "Пустой слот"
+            }
+            participants.append(empty_slot)
+        
+        # Обновляем статус турнира в БД
+        db_manager.execute(
+            "tournaments",
+            "UPDATE tournaments SET started = 1 WHERE id = ?",
+            (tournament["id"],)
+        )
+        
+        tournament["started"] = True
+        
+        # Создаем матчи первого раунда
+        await self.create_first_round(tournament)
+        
+        await ctx.send("✅ Турнир начат! Матчи первого раунда созданы.")
+
+    async def create_first_round(self, tournament):
+        """Создает матчи первого раунда турнира"""
+        participants = tournament["participants"]
+        
+        # Сортируем участников по рейтингу
+        rated_participants = []
+        for p in participants:
+            if p["id"] == 0:  # Пустой слот
+                rating = 0
+            else:
+                rating = db_manager.fetchone(
+                    "players",
+                    "SELECT currentelo FROM players WHERE discordid = ?",
+                    (str(p["id"]),)
+                )
+                rating = rating[0] if rating else 1000
+            
+            rated_participants.append((rating, p))
+        
+        # Сортируем по рейтингу (лучшие первые)
+        rated_participants.sort(reverse=True, key=lambda x: x[0])
+        
+        # Разбиваем на пары (1 vs последний, 2 vs предпоследний и т.д.)
+        matches = []
+        for i in range(len(rated_participants) // 2):
+            player1 = rated_participants[i][1]
+            player2 = rated_participants[len(rated_participants)-1-i][1]
+            
+            # Создаем матч только если оба не пустые слоты
+            if player1["id"] != 0 or player2["id"] != 0:
+                matches.append((player1, player2))
+        
+        # Создаем матчи
+        for player1, player2 in matches:
+            # Для реальных игроков получаем данные из базы
+            p1_data = {
+                "discord_id": player1["id"],
+                "nickname": player1["name"],
+                "rating": db_manager.fetchone(
+                    "players",
+                    "SELECT currentelo FROM players WHERE discordid = ?",
+                    (str(player1["id"]),)
+                )[0] if player1["id"] != 0 else 0,
+                "channel_id": tournament["channels"]["matches"].id,
+                "join_time": datetime.now()
+            }
+            
+            p2_data = {
+                "discord_id": player2["id"],
+                "nickname": player2["name"],
+                "rating": db_manager.fetchone(
+                    "players",
+                    "SELECT currentelo FROM players WHERE discordid = ?",
+                    (str(player2["id"]),)
+                )[0] if player2["id"] != 0 else 0,
+                "channel_id": tournament["channels"]["matches"].id,
+                "join_time": datetime.now()
+            }
+            
+            # Создаем турнирный матч (matchtype=2)
+            await create_match(
+                MODES["station5f"],  # Турниры всегда в Station 5 flags
+                p1_data,
+                p2_data,
+                matchtype=2,
+                tournament_id=tournament["id"]
+            )
 
     @commands.command()
     @commands.check(lambda ctx: ctx.author.id == MODERATOR_ID)

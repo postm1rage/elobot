@@ -1227,9 +1227,21 @@ async def find_match():
         )
 
         try:
+            # Проверяем активные турнирные матчи у игроков
+            active_tournament_matches = db_manager.fetchall(
+                'matches',
+                "SELECT player1, player2 FROM matches WHERE isover = 0 AND matchtype = 2"
+            )
+            tournament_players = set()
+            for match in active_tournament_matches:
+                tournament_players.add(match[0])
+                tournament_players.add(match[1])
+
             # Обработка стандартных режимов (1, 2, 3)
             for mode in [MODES["station5f"], MODES["mots"], MODES["12min"]]:
-                queue = queues[mode]
+                # Фильтруем игроков, участвующих в турнирных матчах
+                queue = [p for p in queues[mode] if p["nickname"] not in tournament_players]
+                
                 if len(queue) >= 2:
                     try:
                         queue.sort(key=lambda x: x["join_time"])
@@ -1254,7 +1266,7 @@ async def find_match():
                         continue
 
             # Обработка режима "Any" (0)
-            queue_any = queues[MODES["any"]]
+            queue_any = [p for p in queues[MODES["any"]] if p["nickname"] not in tournament_players]
             if queue_any:
                 try:
                     # Поиск в других режимах (1, 2, 3)
@@ -1264,7 +1276,7 @@ async def find_match():
                     candidate_idx = None
 
                     for mode in [MODES["station5f"], MODES["mots"], MODES["12min"]]:
-                        queue = queues[mode]
+                        queue = [p for p in queues[mode] if p["nickname"] not in tournament_players]
                         for idx, p in enumerate(queue):
                             diff = abs(queue_any[0]["rating"] - p["rating"])
                             if diff < min_diff:
@@ -1309,7 +1321,7 @@ async def find_match():
             save_queues_to_db()
 
 
-async def create_match(mode, player1, player2):
+async def create_match(mode, player1, player2, matchtype=1, tournament_id=None):
     """Создает матч и уведомляет игроков"""
     try:
         print(
@@ -1327,10 +1339,10 @@ async def create_match(mode, player1, player2):
         cursor = db_manager.execute(
             'matches',
             """
-            INSERT INTO matches (mode, player1, player2, start_time)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO matches (mode, player1, player2, start_time, matchtype, tournament_id)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (mode, player1["nickname"], player2["nickname"], datetime.now()),
+            (mode, player1["nickname"], player2["nickname"], datetime.now(), matchtype, tournament_id),
         )
         match_id = cursor.lastrowid
 
@@ -1344,6 +1356,7 @@ async def create_match(mode, player1, player2):
                 description=(
                     f"**Режим:** {mode_name}\n"
                     f"**Match ID:** {match_id}\n"
+                    f"**Тип:** {'Турнирный' if matchtype == 2 else 'Обычный'}\n"
                     f"**Игрок 1:** {player1['nickname']}\n"
                     f"**Игрок 2:** {player2['nickname']}"
                 ),
@@ -1366,6 +1379,11 @@ async def create_match(mode, player1, player2):
                     title="🎮 Матч найден!", color=discord.Color.green()
                 )
                 embed.add_field(name="Режим", value=f"**{mode_name}**", inline=False)
+                embed.add_field(
+                    name="Тип матча",
+                    value="Турнирный" if matchtype == 2 else "Обычный",
+                    inline=False,
+                )
                 embed.add_field(
                     name="Противник",
                     value=f"**{opponent_data['nickname']}**",
