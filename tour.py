@@ -5,10 +5,11 @@ from datetime import datetime
 from db_manager import db_manager
 from queueing import create_match
 from config import MODES
+import asyncio
 
 
 class Tour:
-    def __init__(self, bot, tournament_name, participants, slots):
+    def __init__(self, bot, tournament_name, participants, slots, cog):
         self.bot = bot
         self.name = tournament_name
         self.participants = participants
@@ -17,6 +18,7 @@ class Tour:
         self.matches = []
         self.winners = []
         self.is_finished = False
+        self.cog = cog
 
     async def start_round(self):
         """Начинает новый раунд турнира"""
@@ -24,6 +26,15 @@ class Tour:
         if self.current_round > 1:
             self.participants = self.winners
             self.winners = []
+
+        # Удаляем дубликаты участников
+        unique_participants = []
+        seen_ids = set()
+        for p in self.participants:
+            if p["id"] not in seen_ids:
+                seen_ids.add(p["id"])
+                unique_participants.append(p)
+        self.participants = unique_participants
 
         # Заполняем пустые слоты если нужно (только для первого раунда)
         if self.current_round == 1:
@@ -36,12 +47,26 @@ class Tour:
                     }
                 )
 
-        # Случайное разбиение на пары
+        # Случайное разбиение на пары, исключая дубликаты
         random.shuffle(self.participants)
         pairs = []
-        for i in range(0, len(self.participants), 2):
-            if i + 1 < len(self.participants):
-                pairs.append((self.participants[i], self.participants[i + 1]))
+        used_ids = set()
+
+        for i in range(len(self.participants)):
+            if self.participants[i]["id"] in used_ids:
+                continue
+
+            # Ищем следующего доступного участника
+            for j in range(i + 1, len(self.participants)):
+                if (
+                    self.participants[j]["id"] not in used_ids
+                    and self.participants[j]["id"] != self.participants[i]["id"]
+                ):
+
+                    pairs.append((self.participants[i], self.participants[j]))
+                    used_ids.add(self.participants[i]["id"])
+                    used_ids.add(self.participants[j]["id"])
+                    break
 
         # Создаем матчи
         self.matches = []
@@ -60,6 +85,24 @@ class Tour:
                     "is_finished": False,
                 }
             )
+
+        # Если остался нечетный участник - автоматически проходит дальше
+        if len(used_ids) < len(self.participants):
+            remaining = [p for p in self.participants if p["id"] not in used_ids]
+            if remaining:
+                lucky_player = remaining[0]
+                self.winners.append(lucky_player)
+
+                # Уведомление о автоматическом прохождении
+                if lucky_player["id"] != 0:  # Если это не пустой слот
+                    try:
+                        user = await self.bot.fetch_user(lucky_player["id"])
+                        await user.send(
+                            f"🎉 В турнире {self.name} (раунд {self.current_round}) "
+                            f"у вас не оказалось соперника, поэтому вы автоматически проходите в следующий раунд!"
+                        )
+                    except Exception as e:
+                        print(f"Не удалось уведомить игрока: {e}")
 
         # Отправляем информацию в канал
         await self.send_round_info()
@@ -171,14 +214,17 @@ class Tour:
             print(f"⚠ Канал {self.name}-matches не найден")
             return
 
+        # Получаем только актуальные матчи текущего раунда
         matches = db_manager.fetchall(
             "matches",
             """SELECT matchid, player1, player2, isover 
             FROM matches 
             WHERE tournament_id = ? 
-            ORDER BY matchid DESC 
-            LIMIT ?""",
-            (self.name, len(self.matches)),
+            AND matchid IN ({})
+            ORDER BY matchid""".format(
+                ",".join("?" for _ in self.matches)
+            ),
+            (self.name, *(m["id"] for m in self.matches)),
         )
 
         embed = discord.Embed(
@@ -196,14 +242,31 @@ class Tour:
                 inline=False,
             )
 
+        # Добавляем информацию об автоматически прошедших
+        if len(self.winners) > len(self.matches):
+            auto_qualified = [
+                w
+                for w in self.winners
+                if w
+                not in [m["player1"] for m in self.matches]
+                + [m["player2"] for m in self.matches]
+            ]
+            if auto_qualified:
+                names = ", ".join(p["name"] for p in auto_qualified)
+                embed.add_field(
+                    name="Автоматически проходят",
+                    value=f"Следующие участники получают автоматический проход: {names}",
+                    inline=False,
+                )
+
         embed.set_footer(text=f"Всего матчей: {len(matches)}")
         await channel.send(embed=embed)
 
     async def check_round_completion(self):
         """Проверяет завершение всех матчей раунда"""
+        # Сначала обновляем информацию о завершенных матчах
         for match in self.matches:
             if not match["is_finished"]:
-                # Проверяем статус матча в БД
                 match_data = db_manager.fetchone(
                     "matches",
                     "SELECT isover, player1score, player2score FROM matches WHERE matchid = ?",
@@ -225,27 +288,15 @@ class Tour:
                         winner
                     )  # Добавляем победителя в следующий раунд
 
-        # Если все матчи завершены
-        if all(m["is_finished"] for m in self.matches):
+        # Если все матчи завершены или их нет (принудительный переход)
+        if all(m["is_finished"] for m in self.matches) or not self.matches:
             if len(self.winners) == 1:
                 # Турнир завершен
                 await self.finish_tournament()
             else:
                 # Начинаем следующий раунд
                 self.current_round += 1
-                await self.start_round()
-
-        # Если все матчи завершены, переходим к следующему раунду
-        if all(m["is_finished"] for m in self.matches):
-            if len(self.winners) == 1:
-                # Турнир завершен
-                await self.finish_tournament()
-            else:
-                # Начинаем следующий раунд
-                self.current_round += 1
-                self.participants = self.winners
-                self.winners = []
-                self.matches = []
+                self.matches = []  # Очищаем текущие матчи
                 await self.start_round()
 
     async def finish_tournament(self):
@@ -280,6 +331,9 @@ class Tour:
                 await user.send(embed=winner_embed)
             except Exception as e:
                 print(f"Не удалось отправить уведомление победителю: {e}")
+
+        if self.cog and self.name in self.cog.active_tours:
+            del self.cog.active_tours[self.name]
 
     async def set_winner(self, match_id, winner_name):
         """Вручную устанавливает победителя матча"""

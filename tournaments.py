@@ -13,6 +13,7 @@ class Tournaments(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.tournaments = {}
+        self.active_tours = {}
         self.load_tournaments()
 
     def load_tournaments(self):
@@ -82,6 +83,13 @@ class Tournaments(commands.Cog):
         """При запуске бота синхронизируем каналы"""
         for guild in self.bot.guilds:
             await self.sync_tournament_channels(guild)
+            self.bot.loop.create_task(self.periodic_tournament_check())
+
+    async def periodic_tournament_check(self):
+        while True:
+            await asyncio.sleep(60)  # Проверка каждую минуту
+            for tour in list(self.active_tours.values()):
+                await tour.check_round_completion()
 
     async def check_blacklist(self, user_id):
         """Проверяет, находится ли пользователь в черном списке"""
@@ -172,6 +180,38 @@ class Tournaments(commands.Cog):
                 except:
                     pass
 
+    @commands.command()
+    @commands.check(lambda ctx: ctx.author.id == MODERATOR_ID)
+    async def nexttour(self, ctx):
+        """Принудительно начинает следующий тур в текущем раунде (только для модераторов)"""
+        tournament_name = ctx.channel.category.name
+        
+        if tournament_name not in self.active_tours:
+            return await ctx.send("❌ Активный турнир не найден или не начат")
+        
+        tour = self.active_tours[tournament_name]
+        
+        # Проверяем, все ли матчи текущего раунда завершены
+        unfinished_matches = db_manager.fetchall(
+            "matches",
+            """SELECT matchid FROM matches 
+            WHERE tournament_id = ? AND isover = 0""",
+            (tournament_name,)
+        )
+        
+        if unfinished_matches:
+            return await ctx.send(
+                f"❌ Не все матчи текущего раунда завершены. Осталось: {len(unfinished_matches)}"
+            )
+        
+        # Если все матчи завершены, переходим к следующему раунду
+        if len(tour.winners) == 1:
+            return await ctx.send("❌ Турнир уже завершен, есть победитель")
+        
+        await ctx.send("⏳ Принудительно начинаю следующий тур...")
+        await tour.check_round_completion()
+        await ctx.send(f"✅ Тур {tour.current_round} начат!")
+
     async def create_tournament_channels(self, guild, name):
         """Создает публичные каналы для турнира"""
         # Создаем категорию с стандартными правами (публичную)
@@ -206,36 +246,28 @@ class Tournaments(commands.Cog):
     @commands.command()
     @commands.check(lambda ctx: ctx.author.id == MODERATOR_ID)
     async def tstart(self, ctx):
-        """Начинает турнир (только для модераторов)"""
         tournament_name = ctx.channel.category.name
-        
         if tournament_name not in self.tournaments:
             return await ctx.send("❌ Турнир не найден")
-        
         tournament = self.tournaments[tournament_name]
-        
         if tournament.get("started", False):
             return await ctx.send("❌ Турнир уже начат")
         
-        # Создаем экземпляр турнира
-        self.active_tournament = Tour(
+        self.active_tours[tournament_name] = Tour(
             bot=self.bot,
             tournament_name=tournament_name,
             participants=tournament["participants"],
-            slots=tournament["slots"]
+            slots=tournament["slots"],
+            cog=self
         )
         
-        # Обновляем статус турнира в БД
         db_manager.execute(
             "tournaments",
             "UPDATE tournaments SET started = 1 WHERE id = ?",
             (tournament["id"],)
         )
-        
         tournament["started"] = True
-        
-        # Начинаем первый раунд
-        await self.active_tournament.start_round()
+        await self.active_tours[tournament_name].start_round()
         await ctx.send("✅ Турнир начат! Первый раунд создан.")
 
     @commands.command()
@@ -310,6 +342,10 @@ class Tournaments(commands.Cog):
         except Exception as e:
             print(f"Ошибка в setwinner: {e}")
             await ctx.send("❌ Произошла ошибка при обработке команды")
+
+        tournament_name = ctx.channel.category.name
+        if tournament_name in self.active_tours:
+            await self.active_tours[tournament_name].check_round_completion()
 
     async def create_first_round(self, tournament):
         """Создает матчи первого раунда турнира"""

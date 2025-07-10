@@ -157,6 +157,7 @@ class ModeratorResolutionView(View):
         await interaction.message.delete()
 
     async def process_match_result(self, player1, player2, mode, score1, score2):
+        
         """Обработка подтвержденного результата"""
         try:
             # Определяем победителя
@@ -474,6 +475,16 @@ class PlayerConfirmationView(View):
             player1 = result_data["player1"]
             player2 = result_data["player2"]
             mode = result_data["mode"]
+
+            tournament_id = db_manager.fetchone(
+            "matches",
+            "SELECT tournament_id FROM matches WHERE matchid = ?",
+            (match_id,)
+        )[0]
+            if tournament_id:
+                tournaments_cog = global_bot.get_cog('Tournaments')
+                if tournaments_cog and tournament_id in tournaments_cog.active_tours:
+                    await tournaments_cog.active_tours[tournament_id].check_round_completion()
 
             # Получаем тип матча
             matchtype = db_manager.fetchone(
