@@ -245,6 +245,21 @@ class Tournaments(commands.Cog):
             if p["id"] == 0:  # Пустой слот
                 rating = 0
             else:
+                # Проверяем, что игрок не участвует в другом турнирном матче
+                active_tournament_match = db_manager.fetchone(
+                    'matches',
+                    """
+                    SELECT 1 FROM matches 
+                    WHERE (player1 = ? OR player2 = ?) 
+                    AND isover = 0 
+                    AND matchtype = 2
+                    """,
+                    (p["name"], p["name"]),
+                )
+                
+                if active_tournament_match:
+                    continue  # Пропускаем игрока, если он уже в турнирном матче
+                
                 rating = db_manager.fetchone(
                     "players",
                     "SELECT currentelo FROM players WHERE discordid = ?",
