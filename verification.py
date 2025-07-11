@@ -182,7 +182,7 @@ def setup(bot):
     @bot.event
     async def on_message(message):
         if message.author.bot:
-            return
+            return await bot.process_commands(message)
 
         # Пропускаем команды
         if message.content.startswith(("!", ".")):
@@ -295,5 +295,8 @@ def setup(bot):
                         )
                 except:
                     pass
+
+            await bot.process_commands(message)
+            return
 
         await bot.process_commands(message)

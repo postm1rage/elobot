@@ -1,4 +1,5 @@
 import discord
+import json
 import random
 from discord.ext import commands
 from datetime import datetime
@@ -19,10 +20,98 @@ class Tour:
         self.winners = []
         self.is_finished = False
         self.cog = cog
+        self.tournament_id = None  # Добавляем ID турнира
+
+    async def save_state(self):
+        """Сохраняет текущее состояние турнира в БД"""
+        tour_data = {
+            "current_round": self.current_round,
+            "participants": json.dumps(self.participants),
+            "winners": json.dumps(self.winners),
+            "matches": json.dumps(
+                [
+                    {
+                        "id": m["id"],
+                        "player1": m["player1"],
+                        "player2": m["player2"],
+                        "winner": m["winner"],
+                        "is_finished": m["is_finished"],
+                    }
+                    for m in self.matches
+                ]
+            ),
+        }
+
+        # Получаем ID турнира если еще не знаем
+        if not self.tournament_id:
+            tour = db_manager.fetchone(
+                "tournaments", "SELECT id FROM tournaments WHERE name = ?", (self.name,)
+            )
+            if tour:
+                self.tournament_id = tour[0]
+
+        if self.tournament_id:
+            # Удаляем старую запись если есть
+            db_manager.execute(
+                "tournaments",
+                "DELETE FROM active_tours WHERE tournament_id = ?",
+                (self.tournament_id,),
+            )
+
+            # Вставляем новую
+            db_manager.execute(
+                "tournaments",
+                """INSERT INTO active_tours 
+                (tournament_id, current_round, participants, winners, matches)
+                VALUES (?, ?, ?, ?, ?)""",
+                (
+                    self.tournament_id,
+                    tour_data["current_round"],
+                    tour_data["participants"],
+                    tour_data["winners"],
+                    tour_data["matches"],
+                ),
+            )
+
+            async def load_state(self):
+                """Загружает состояние турнира из БД"""
+                import json
+
+                tour = db_manager.fetchone(
+                    "tournaments",
+                    """SELECT id, current_round, participants, winners, matches 
+                    FROM active_tours 
+                    WHERE tournament_id = (
+                        SELECT id FROM tournaments WHERE name = ?
+                    )""",
+                    (self.name,),
+                )
+
+                if tour:
+                    self.tournament_id = tour[0]
+                    self.current_round = tour[1]
+                    self.participants = json.loads(tour[2])
+                    self.winners = json.loads(tour[3])
+
+                    # Восстанавливаем матчи
+                    self.matches = []
+                    for m in json.loads(tour[4]):
+                        self.matches.append(
+                            {
+                                "id": m["id"],
+                                "player1": m["player1"],
+                                "player2": m["player2"],
+                                "winner": m["winner"],
+                                "is_finished": m["is_finished"],
+                            }
+                        )
+
+                    return True
+                return False
 
     async def start_round(self):
-        """Начинает новый раунд турнира"""
-        # Если это не первый раунд, участники - победители предыдущего
+        """Начинает новый тур турнира"""
+        # Если это не первый тур, участники - победители предыдущего
         if self.current_round > 1:
             self.participants = self.winners
             self.winners = []
@@ -36,7 +125,7 @@ class Tour:
                 unique_participants.append(p)
         self.participants = unique_participants
 
-        # Заполняем пустые слоты если нужно (только для первого раунда)
+        # Заполняем пустые слоты если нужно (только для первого тура)
         if self.current_round == 1:
             while len(self.participants) < self.slots:
                 self.participants.append(
@@ -98,14 +187,15 @@ class Tour:
                     try:
                         user = await self.bot.fetch_user(lucky_player["id"])
                         await user.send(
-                            f"🎉 В турнире {self.name} (раунд {self.current_round}) "
-                            f"у вас не оказалось соперника, поэтому вы автоматически проходите в следующий раунд!"
+                            f"🎉 В турнире {self.name} (тур {self.current_round}) "
+                            f"у вас не оказалось соперника, поэтому вы автоматически проходите в следующий тур!"
                         )
                     except Exception as e:
                         print(f"Не удалось уведомить игрока: {e}")
 
         # Отправляем информацию в канал
         await self.send_round_info()
+        await self.save.state()
 
     async def create_tournament_match(self, player1, player2):
         """Создает турнирный матч и уведомляет реальных игроков"""
@@ -142,17 +232,27 @@ class Tour:
             "join_time": datetime.now(),
         }
 
+        # Создаем обычный турнирный матч
+        cursor = db_manager.execute(
+            "matches",
+            """INSERT INTO matches 
+            (mode, player1, player2, start_time, matchtype, tournament_id) 
+            VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                MODES["station5f"],
+                player1["name"],
+                player2["name"],
+                datetime.now(),
+                2,  # matchtype = 2 для турнирных матчей
+                self.name,  # Используем название турнира как ID
+            ),
+        )
+        match_id = cursor.lastrowid
+        db_manager.get_connection("matches").commit()
+
         # Если один из игроков - emptyslot, автоматически присуждаем победу
         if player1["id"] == 0 or player2["id"] == 0:
             winner = player2 if player1["id"] == 0 else player1
-            match_id = await create_match(
-                MODES["station5f"],
-                p1_data,
-                p2_data,
-                matchtype=2,
-                tournament_id=self.name,
-            )
-
             # Помечаем матч как завершенный
             winner_score = 1 if winner["id"] == player1["id"] else 0
             loser_score = 1 - winner_score
@@ -170,24 +270,6 @@ class Tour:
             # Добавляем победителя
             self.winners.append(winner)
             return match_id
-
-        # Создаем обычный турнирный матч
-        cursor = db_manager.get_connection("matches").cursor()
-        cursor.execute(
-            """INSERT INTO matches 
-            (mode, player1, player2, start_time, matchtype, tournament_id) 
-            VALUES (?, ?, ?, ?, ?, ?)""",
-            (
-                MODES["station5f"],
-                player1["name"],
-                player2["name"],
-                datetime.now(),
-                2,
-                self.name,
-            ),
-        )
-        match_id = cursor.lastrowid
-        db_manager.get_connection("matches").commit()
 
         # Отправляем уведомления только реальным игрокам
         if player1["id"] != 0:
@@ -214,7 +296,7 @@ class Tour:
             print(f"⚠ Канал {self.name}-matches не найден")
             return
 
-        # Получаем только актуальные матчи текущего раунда
+        # Получаем только актуальные матчи текущего тура
         matches = db_manager.fetchall(
             "matches",
             """SELECT matchid, player1, player2, isover 
@@ -228,8 +310,8 @@ class Tour:
         )
 
         embed = discord.Embed(
-            title=f"🎮 Турнир {self.name} - Раунд {self.current_round}",
-            description="Список матчей текущего раунда:",
+            title=f"🎮 Турнир {self.name} - Тур {self.current_round}",
+            description="Список матчей текущего тура:",
             color=discord.Color.gold(),
         )
 
@@ -263,7 +345,7 @@ class Tour:
         await channel.send(embed=embed)
 
     async def check_round_completion(self):
-        """Проверяет завершение всех матчей раунда"""
+        """Проверяет завершение всех матчей тура"""
         # Сначала обновляем информацию о завершенных матчах
         for match in self.matches:
             if not match["is_finished"]:
@@ -286,7 +368,7 @@ class Tour:
                     match["winner"] = winner
                     self.winners.append(
                         winner
-                    )  # Добавляем победителя в следующий раунд
+                    )  # Добавляем победителя в следующий тур
 
         # Если все матчи завершены или их нет (принудительный переход)
         if all(m["is_finished"] for m in self.matches) or not self.matches:
@@ -294,15 +376,25 @@ class Tour:
                 # Турнир завершен
                 await self.finish_tournament()
             else:
-                # Начинаем следующий раунд
+                # Начинаем следующий тур
                 self.current_round += 1
                 self.matches = []  # Очищаем текущие матчи
                 await self.start_round()
+
+        await self.save_state()
 
     async def finish_tournament(self):
         """Завершает турнир и объявляет победителя"""
         self.is_finished = True
         winner = self.winners[0]
+
+        # Удаляем запись об активном турнире
+        if self.tournament_id:
+            db_manager.execute(
+                "tournaments",
+                "DELETE FROM active_tours WHERE tournament_id = ?",
+                (self.tournament_id,)
+            )
 
         # Создаем embed для объявления победителя
         embed = discord.Embed(
@@ -336,6 +428,7 @@ class Tour:
             del self.cog.active_tours[self.name]
 
     async def set_winner(self, match_id, winner_name):
+        
         """Вручную устанавливает победителя матча"""
         match = next((m for m in self.matches if m["id"] == match_id), None)
         if not match:
@@ -377,7 +470,7 @@ class Tour:
     async def send_match_notification(self, match_id, player, opponent, user):
         """Отправляет уведомление о матче конкретному игроку"""
         embed = discord.Embed(
-            title=f"🎮 Турнирный матч | Раунд {self.current_round}",
+            title=f"🎮 Турнирный матч | Тур {self.current_round}",
             description=f"Турнир: **{self.name}**\nMatch ID: `{match_id}`",
             color=discord.Color.gold(),
         )
@@ -386,8 +479,8 @@ class Tour:
         embed.add_field(
             name="Инструкции",
             value="После завершения матча **победитель** должен отправить результат командой:\n"
-            f"`.result {match_id} <свой_счет>-<счет_соперника>`\n"
-            "Пример: `.result {match_id} 5-3`",
+            f"`.result {match_id} <свой_счет>-<счет_соперника>`"
+            "",
             inline=False,
         )
 

@@ -16,6 +16,54 @@ class Tournaments(commands.Cog):
         self.active_tours = {}
         self.load_tournaments()
 
+    async def load_active_tours(self):
+        """Загружает активные турниры из базы данных"""
+        active_tours = db_manager.fetchall(
+            "tournaments",
+            """SELECT t.name, t.slots, a.current_round, a.participants, a.winners, a.matches
+            FROM tournaments t
+            JOIN active_tours a ON t.id = a.tournament_id
+            WHERE t.started = 1""",
+        )
+
+        for name, slots, current_round, participants, winners, matches in active_tours:
+            import json
+
+            tour = Tour(
+                bot=self.bot,
+                tournament_name=name,
+                participants=json.loads(participants),
+                slots=slots,
+                cog=self,
+            )
+
+            # Вручную устанавливаем состояние
+            tour.current_round = current_round
+            tour.winners = json.loads(winners)
+            tour.matches = []
+            for m in json.loads(matches):
+                tour.matches.append(
+                    {
+                        "id": m["id"],
+                        "player1": m["player1"],
+                        "player2": m["player2"],
+                        "winner": m["winner"],
+                        "is_finished": m["is_finished"],
+                    }
+                )
+
+            self.active_tours[name] = tour
+            print(f"Восстановлен активный турнир: {name} (тур {current_round})")
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        """При запуске бота загружаем активные турниры"""
+        for guild in self.bot.guilds:
+            await self.sync_tournament_channels(guild)
+
+        await self.load_active_tours()  # Восстанавливаем активные турниры
+        self.bot.loop.create_task(self.periodic_tournament_check())
+
     def load_tournaments(self):
         """Загружает турниры из базы данных при старте"""
         tournaments = db_manager.fetchall(
@@ -183,31 +231,31 @@ class Tournaments(commands.Cog):
     @commands.command()
     @commands.check(lambda ctx: ctx.author.id == MODERATOR_ID)
     async def nexttour(self, ctx):
-        """Принудительно начинает следующий тур в текущем раунде (только для модераторов)"""
+        """Принудительно начинает следующий тур в текущем туре (только для модераторов)"""
         tournament_name = ctx.channel.category.name
-        
+
         if tournament_name not in self.active_tours:
             return await ctx.send("❌ Активный турнир не найден или не начат")
-        
+
         tour = self.active_tours[tournament_name]
-        
-        # Проверяем, все ли матчи текущего раунда завершены
+
+        # Проверяем, все ли матчи текущего тура завершены
         unfinished_matches = db_manager.fetchall(
             "matches",
             """SELECT matchid FROM matches 
             WHERE tournament_id = ? AND isover = 0""",
-            (tournament_name,)
+            (tournament_name,),
         )
-        
+
         if unfinished_matches:
             return await ctx.send(
-                f"❌ Не все матчи текущего раунда завершены. Осталось: {len(unfinished_matches)}"
+                f"❌ Не все матчи текущего тура завершены. Осталось: {len(unfinished_matches)}"
             )
-        
-        # Если все матчи завершены, переходим к следующему раунду
+
+        # Если все матчи завершены, переходим к следующему туру
         if len(tour.winners) == 1:
             return await ctx.send("❌ Турнир уже завершен, есть победитель")
-        
+
         await ctx.send("⏳ Принудительно начинаю следующий тур...")
         await tour.check_round_completion()
         await ctx.send(f"✅ Тур {tour.current_round} начат!")
@@ -216,28 +264,22 @@ class Tournaments(commands.Cog):
         """Создает публичные каналы для турнира"""
         # Создаем категорию с стандартными правами (публичную)
         category = await guild.create_category(name)
-        
+
         # Создаем текстовые каналы с стандартными правами
         channels = {
             "info": await guild.create_text_channel(
-                f"{name}-info", 
-                category=category,
-                topic=f"Информация о турнире {name}"
+                f"{name}-info", category=category, topic=f"Информация о турнире {name}"
             ),
             "results": await guild.create_text_channel(
-                f"{name}-results", 
-                category=category,
-                topic=f"Результаты турнира {name}"
+                f"{name}-results", category=category, topic=f"Результаты турнира {name}"
             ),
             "matches": await guild.create_text_channel(
-                f"{name}-matches", 
-                category=category,
-                topic=f"Турнирные матчи {name}"
+                f"{name}-matches", category=category, topic=f"Турнирные матчи {name}"
             ),
             "register": await guild.create_text_channel(
-                f"{name}-register", 
+                f"{name}-register",
                 category=category,
-                topic=f"Регистрация на турнир {name}"
+                topic=f"Регистрация на турнир {name}",
             ),
         }
 
@@ -252,105 +294,138 @@ class Tournaments(commands.Cog):
         tournament = self.tournaments[tournament_name]
         if tournament.get("started", False):
             return await ctx.send("❌ Турнир уже начат")
-        
+
         self.active_tours[tournament_name] = Tour(
             bot=self.bot,
             tournament_name=tournament_name,
             participants=tournament["participants"],
             slots=tournament["slots"],
-            cog=self
+            cog=self,
         )
-        
+
         db_manager.execute(
             "tournaments",
             "UPDATE tournaments SET started = 1 WHERE id = ?",
-            (tournament["id"],)
+            (tournament["id"],),
         )
         tournament["started"] = True
         await self.active_tours[tournament_name].start_round()
-        await ctx.send("✅ Турнир начат! Первый раунд создан.")
+        await ctx.send("✅ Турнир начат! Первый тур создан.")
 
     @commands.command()
     @commands.check(lambda ctx: ctx.author.id == MODERATOR_ID)
     async def setwinner(self, ctx, match_id: int, winner_name: str):
         try:
+            # Получаем полные данные о матче
             match_data = db_manager.fetchone(
                 "matches",
                 """SELECT player1, player2, tournament_id, isover 
                 FROM matches 
                 WHERE matchid = ? AND matchtype = 2""",
-                (match_id,)
+                (match_id,),
             )
-            
+
             if not match_data:
-                return await ctx.send(f"❌ Матч с ID {match_id} не найден или не является турнирным")
-            
+                return await ctx.send(
+                    f"❌ Матч с ID {match_id} не найден или не является турнирным"
+                )
+
             player1, player2, tournament_id, isover = match_data
-            
+
             if isover == 1:
                 return await ctx.send("❌ Этот матч уже завершен")
-            
+
             if winner_name not in [player1, player2]:
-                return await ctx.send(f"❌ Игрок {winner_name} не участвовал в матче {match_id}")
-            
-            tournament = db_manager.fetchone(
-                "tournaments",
-                "SELECT name FROM tournaments WHERE id = ?",
-                (tournament_id,)
-            )
-            tournament_name = tournament[0] if tournament else "Неизвестный турнир"
-            
+                return await ctx.send(
+                    f"❌ Игрок {winner_name} не участвовал в матче {match_id}"
+                )
+
+            # Получаем название турнира (даже если tournament_id None)
+            tournament_name = "Неизвестный турнир"
+            if tournament_id:
+                tournament_data = db_manager.fetchone(
+                    "tournaments",
+                    "SELECT name FROM tournaments WHERE id = ?",
+                    (tournament_id,),
+                )
+                if tournament_data:
+                    tournament_name = tournament_data[0] or "Неизвестный турнир"
+
             # Определяем счет
             if winner_name == player1:
                 score1, score2 = 1, 0
+                loser_name = player2
             else:
                 score1, score2 = 0, 1
-            
+                loser_name = player1
+
             # Обновляем матч в базе
             db_manager.execute(
                 "matches",
                 """UPDATE matches 
                 SET player1score = ?, player2score = ?, isover = 1, isverified = 1 
                 WHERE matchid = ?""",
-                (score1, score2, match_id)
+                (score1, score2, match_id),
             )
-            
-            # Обновляем статистику (без ELO)
+
+            # Обновляем статистику (без ELO для турнирных матчей)
             db_manager.execute(
                 "players",
                 "UPDATE players SET wins = wins + 1 WHERE playername = ?",
-                (winner_name,)
+                (winner_name,),
             )
-            loser_name = player2 if winner_name == player1 else player1
             db_manager.execute(
                 "players",
                 "UPDATE players SET losses = losses + 1 WHERE playername = ?",
-                (loser_name,)
+                (loser_name,),
             )
-            
+
             # Отправляем подтверждение
             embed = discord.Embed(
                 title="✅ Победитель установлен",
                 description=f"В матче #{match_id} турнира **{tournament_name}**",
-                color=discord.Color.green()
+                color=discord.Color.green(),
             )
             embed.add_field(name="Победитель", value=winner_name, inline=True)
             embed.add_field(name="Проигравший", value=loser_name, inline=True)
             embed.add_field(name="Счет", value=f"{score1}-{score2}", inline=False)
             await ctx.send(embed=embed)
-            
+
+            # Обновляем турнирный прогресс
+            if tournament_name in self.active_tours:
+                await self.active_tours[tournament_name].check_round_completion()
+            else:
+                # Попробуем найти турнир по имени, если не нашли по ID
+                for tour_name, tour in self.active_tours.items():
+                    if any(m["id"] == match_id for m in tour.matches):
+                        await tour.check_round_completion()
+                        break
+
+            # Отправляем результат в канал результатов турнира
+            results_channel = discord.utils.get(
+                ctx.guild.channels, name=f"{tournament_name}-results"
+            )
+            if results_channel:
+                result_embed = discord.Embed(
+                    title=f"🏆 Турнирный матч завершен | ID: {match_id}",
+                    description=(
+                        f"**Турнир:** {tournament_name}\n"
+                        f"**Игроки:** {player1} vs {player2}\n"
+                        f"**Счет:** {score1}-{score2}\n"
+                        f"**Победитель:** {winner_name}"
+                    ),
+                    color=discord.Color.green(),
+                )
+                await results_channel.send(embed=result_embed)
+
         except Exception as e:
             print(f"Ошибка в setwinner: {e}")
             await ctx.send("❌ Произошла ошибка при обработке команды")
 
-        tournament_name = ctx.channel.category.name
-        if tournament_name in self.active_tours:
-            await self.active_tours[tournament_name].check_round_completion()
-
     async def create_first_round(self, tournament):
-        """Создает матчи первого раунда турнира"""
+        """Создает матчи первого тура турнира"""
         participants = tournament["participants"]
-        
+
         # Сортируем участников по рейтингу
         rated_participants = []
         for p in participants:
@@ -359,7 +434,7 @@ class Tournaments(commands.Cog):
             else:
                 # Проверяем, что игрок не участвует в другом турнирном матче
                 active_tournament_match = db_manager.fetchone(
-                    'matches',
+                    "matches",
                     """
                     SELECT 1 FROM matches 
                     WHERE (player1 = ? OR player2 = ?) 
@@ -368,66 +443,74 @@ class Tournaments(commands.Cog):
                     """,
                     (p["name"], p["name"]),
                 )
-                
+
                 if active_tournament_match:
                     continue  # Пропускаем игрока, если он уже в турнирном матче
-                
+
                 rating = db_manager.fetchone(
                     "players",
                     "SELECT currentelo FROM players WHERE discordid = ?",
-                    (str(p["id"]),)
+                    (str(p["id"]),),
                 )
                 rating = rating[0] if rating else 1000
-            
+
             rated_participants.append((rating, p))
-        
+
         # Сортируем по рейтингу (лучшие первые)
         rated_participants.sort(reverse=True, key=lambda x: x[0])
-        
+
         # Разбиваем на пары (1 vs последний, 2 vs предпоследний и т.д.)
         matches = []
         for i in range(len(rated_participants) // 2):
             player1 = rated_participants[i][1]
-            player2 = rated_participants[len(rated_participants)-1-i][1]
-            
+            player2 = rated_participants[len(rated_participants) - 1 - i][1]
+
             # Создаем матч только если оба не пустые слоты
             if player1["id"] != 0 or player2["id"] != 0:
                 matches.append((player1, player2))
-        
+
         # Создаем матчи
         for player1, player2 in matches:
             # Для реальных игроков получаем данные из базы
             p1_data = {
                 "discord_id": player1["id"],
                 "nickname": player1["name"],
-                "rating": db_manager.fetchone(
-                    "players",
-                    "SELECT currentelo FROM players WHERE discordid = ?",
-                    (str(player1["id"]),)
-                )[0] if player1["id"] != 0 else 0,
+                "rating": (
+                    db_manager.fetchone(
+                        "players",
+                        "SELECT currentelo FROM players WHERE discordid = ?",
+                        (str(player1["id"]),),
+                    )[0]
+                    if player1["id"] != 0
+                    else 0
+                ),
                 "channel_id": tournament["channels"]["matches"].id,
-                "join_time": datetime.now()
+                "join_time": datetime.now(),
             }
-            
+
             p2_data = {
                 "discord_id": player2["id"],
                 "nickname": player2["name"],
-                "rating": db_manager.fetchone(
-                    "players",
-                    "SELECT currentelo FROM players WHERE discordid = ?",
-                    (str(player2["id"]),)
-                )[0] if player2["id"] != 0 else 0,
+                "rating": (
+                    db_manager.fetchone(
+                        "players",
+                        "SELECT currentelo FROM players WHERE discordid = ?",
+                        (str(player2["id"]),),
+                    )[0]
+                    if player2["id"] != 0
+                    else 0
+                ),
                 "channel_id": tournament["channels"]["matches"].id,
-                "join_time": datetime.now()
+                "join_time": datetime.now(),
             }
-            
+
             # Создаем турнирный матч (matchtype=2)
             await create_match(
                 MODES["station5f"],  # Турниры всегда в Station 5 flags
                 p1_data,
                 p2_data,
                 matchtype=2,
-                tournament_id=tournament["id"]
+                tournament_id=tournament["id"],
             )
 
     @commands.command()
@@ -795,25 +878,25 @@ class Tournaments(commands.Cog):
             (str(user_id),),
         )
         return result and result[0] == 1
-    
+
     async def is_active_tournament_match(self, match_id):
         """Проверяет, принадлежит ли матч активному турниру"""
         match_data = db_manager.fetchone(
             "matches",
             """SELECT tournament_id FROM matches 
             WHERE matchid = ? AND matchtype = 2 AND isover = 0""",
-            (match_id,)
+            (match_id,),
         )
         if not match_data:
             return False
-        
+
         tournament_id = match_data[0]
         tournament = db_manager.fetchone(
             "tournaments",
             "SELECT started FROM tournaments WHERE id = ?",
-            (tournament_id,)
+            (tournament_id,),
         )
-        
+
         return tournament and tournament[0] == 1  # Турнир должен быть начат
 
 

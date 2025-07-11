@@ -338,21 +338,35 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    print(f"Получено сообщение в #{message.channel.name}: {message.content[:20]}...")
+    # Логирование входящего сообщения
+    channel_info = (
+        f"ЛС бота"
+        if isinstance(message.channel, discord.DMChannel)
+        else f"#{message.channel.name}"
+    )
+    print(f"[Сообщение] {message.author} ({channel_info}): {message.content[:100]}...")
 
+    # Обработка команд в ЛС
+    if isinstance(message.channel, discord.DMChannel):
+        ctx = await bot.get_context(message)
+        if ctx.command:
+            await bot.invoke(ctx)
+        return
+
+    await bot.process_commands(message)
+
+    # Обработка результатов матчей в канале elobot-results
     if message.channel.name == "elobot-results" and message.attachments:
         score_match = re.search(r"(\d+)\s*-\s*(\d+)", message.content)
-        if not score_match:
-            return
+        if score_match:
+            score1 = int(score_match.group(1))
+            score2 = int(score_match.group(2))
 
-        score1 = int(score_match.group(1))
-        score2 = int(score_match.group(2))
-
-        if score1 == score2:
-            await message.channel.send(
-                "❌ Счет не может быть равным! Матч должен иметь победителя."
-            )
-            return
+            if score1 == score2:
+                await message.channel.send(
+                    "❌ Счет не может быть равным! Матч должен иметь победителя."
+                )
+                return
 
         winner_score = max(score1, score2)
         loser_score = min(score1, score2)

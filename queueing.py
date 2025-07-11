@@ -1,4 +1,5 @@
 import discord
+
 from discord.ui import View, Button, Select
 from config import (
     MODES,
@@ -157,7 +158,6 @@ class ModeratorResolutionView(View):
         await interaction.message.delete()
 
     async def process_match_result(self, player1, player2, mode, score1, score2):
-        
         """Обработка подтвержденного результата"""
         try:
             # Определяем победителя
@@ -477,14 +477,16 @@ class PlayerConfirmationView(View):
             mode = result_data["mode"]
 
             tournament_id = db_manager.fetchone(
-            "matches",
-            "SELECT tournament_id FROM matches WHERE matchid = ?",
-            (match_id,)
-        )[0]
+                "matches",
+                "SELECT tournament_id FROM matches WHERE matchid = ?",
+                (match_id,),
+            )[0]
             if tournament_id:
-                tournaments_cog = global_bot.get_cog('Tournaments')
+                tournaments_cog = global_bot.get_cog("Tournaments")
                 if tournaments_cog and tournament_id in tournaments_cog.active_tours:
-                    await tournaments_cog.active_tours[tournament_id].check_round_completion()
+                    await tournaments_cog.active_tours[
+                        tournament_id
+                    ].check_round_completion()
 
             # Получаем тип матча
             matchtype = db_manager.fetchone(
@@ -528,7 +530,9 @@ class PlayerConfirmationView(View):
             if matchtype == 1:
                 rating_winner = get_player_rating(winner, mode)
                 rating_loser = get_player_rating(loser, mode)
-                new_rating_winner, new_rating_loser = calculate_elo(rating_winner, rating_loser, 1)
+                new_rating_winner, new_rating_loser = calculate_elo(
+                    rating_winner, rating_loser, 1
+                )
                 update_player_rating(winner, new_rating_winner, mode)
                 update_player_rating(loser, new_rating_loser, mode)
                 elo_change = f"\n\n**Изменения ELO:**\n{winner}: {rating_winner} → **{new_rating_winner}**\n{loser}: {rating_loser} → **{new_rating_loser}**"
@@ -1472,31 +1476,6 @@ async def create_match(mode, player1, player2, matchtype=1, tournament_id=None):
             print(f"[MATCH] Матч с emptyslot автоматически завершен в пользу {winner}")
             return match_id
 
-        # Обновляем статус в базе
-        db_manager.execute(
-            "players",
-            "UPDATE players SET in_queue = 0 WHERE playername IN (?, ?)",
-            (player1["nickname"], player2["nickname"]),
-        )
-
-        # Создаем запись о матче и получаем ID
-        cursor = db_manager.execute(
-            "matches",
-            """
-            INSERT INTO matches (mode, player1, player2, start_time, matchtype, tournament_id)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                mode,
-                player1["nickname"],
-                player2["nickname"],
-                datetime.now(),
-                matchtype,
-                tournament_id,
-            ),
-        )
-        match_id = cursor.lastrowid
-
         # Уведомляем в канале очереди
         try:
             channel = global_bot.get_channel(player1["channel_id"])
@@ -1610,7 +1589,7 @@ async def check_expired_matches(bot):
 
             now = datetime.now()
             one_hour_ago = now - timedelta(hours=1)
-            
+
             print(
                 f"[{now.strftime('%H:%M:%S')}] Проверка матчей старше {one_hour_ago.strftime('%H:%M:%S')}"
             )
@@ -1822,15 +1801,6 @@ def setup(bot):
     global global_bot
     global_bot = bot
 
-    @bot.event
-    async def on_message(message):
-        # Важно: сначала обработать команды бота
-        await bot.process_commands(message)
-
-        # Обрабатываем только личные сообщения не от бота
-        if not isinstance(message.channel, discord.DMChannel) or message.author.bot:
-            return
-
     @bot.command()
     async def play(ctx):
         # Проверка канала
@@ -2020,18 +1990,11 @@ def setup(bot):
     @bot.command()
     async def result(ctx, match_id: int, scores: str):
         """Отправка результата матча с приложенным скриншотом"""
-        # Проверяем, что команда вызвана в ЛС
-        if not isinstance(ctx.channel, discord.DMChannel):
-            await ctx.send(
-                "❌ Эта команда доступна только в личных сообщениях с ботом."
-            )
-            return
 
-        if match_id in pending_reports:
-            await ctx.send(
-                "❌ Нельзя отправить результат: по этому матчу есть активный репорт."
-            )
-            return
+        # Логирование запроса
+        print(
+            f"[RESULT] Запрос от {ctx.author.name} ({ctx.author.id}) для матча {match_id} со счётом {scores}"
+        )
 
         # Проверяем формат счета
         if not re.match(r"^\d+-\d+$", scores):
@@ -2056,24 +2019,29 @@ def setup(bot):
         screenshot = ctx.message.attachments[0].url
 
         # Проверяем существование матча
-        match_data = db_manager.execute(
+        match_data = db_manager.fetchone(
             "matches",
-            "SELECT player1, player2, mode, matchtype FROM matches WHERE matchid = ?",
+            "SELECT player1, player2, mode, matchtype, tournament_id, isover FROM matches WHERE matchid = ?",
             (match_id,),
-        ).fetchone()
+        )
 
         if not match_data:
             await ctx.send("❌ Матч с указанным ID не найден.")
             return
 
-        player1, player2, mode, matchtype = match_data
+        player1, player2, mode, matchtype, tournament_id, isover = match_data
+
+        # Проверяем, не завершён ли уже матч
+        if isover == 1:
+            await ctx.send("❌ Этот матч уже завершён.")
+            return
 
         # Проверяем, что игрок участвует в матче
-        player_data = db_manager.execute(
+        player_data = db_manager.fetchone(
             "players",
             "SELECT playername FROM players WHERE discordid = ?",
             (str(ctx.author.id),),
-        ).fetchone()
+        )
 
         if not player_data:
             await ctx.send("❌ Вы не зарегистрированы в системе.")
@@ -2085,23 +2053,113 @@ def setup(bot):
             await ctx.send("❌ Вы не участвуете в этом матче.")
             return
 
-        # Определяем оппонента
-        opponent_name = player2 if submitter_name == player1 else player1
+        # Определяем предполагаемого победителя по счету
+        if score1 > score2:
+            presumed_winner = player1
+        else:
+            presumed_winner = player2
 
-        # Получаем discord_id оппонента
-        opponent_data = db_manager.execute(
-            "players",
-            "SELECT discordid FROM players WHERE playername = ?",
-            (opponent_name,),
-        ).fetchone()
-
-        if not opponent_data:
-            await ctx.send("❌ Не удалось найти оппонента в системе")
+        if submitter_name != presumed_winner:
+            await ctx.send(
+                f"❌ Результат должен отправлять победитель ({presumed_winner})!"
+            )
             return
 
-        opponent_id = int(opponent_data[0])
+        # Обработка турнирных матчей
+        if matchtype == 2:
+            # Обновляем запись матча
+            db_manager.execute(
+                "matches",
+                """
+                UPDATE matches 
+                SET player1score = ?, player2score = ?, isover = 1, isverified = 1
+                WHERE matchid = ?
+                """,
+                (score1, score2, match_id),
+            )
 
-        # Сохраняем результат для подтверждения оппонентом
+            # Обновляем статистику
+            if score1 > score2:
+                db_manager.execute(
+                    "players",
+                    "UPDATE players SET wins = wins + 1 WHERE playername = ?",
+                    (player1,),
+                )
+                db_manager.execute(
+                    "players",
+                    "UPDATE players SET losses = losses + 1 WHERE playername = ?",
+                    (player2,),
+                )
+            else:
+                db_manager.execute(
+                    "players",
+                    "UPDATE players SET wins = wins + 1 WHERE playername = ?",
+                    (player2,),
+                )
+                db_manager.execute(
+                    "players",
+                    "UPDATE players SET losses = losses + 1 WHERE playername = ?",
+                    (player1,),
+                )
+
+            # Получаем название турнира
+            tournament_name = "Неизвестный турнир"
+            if tournament_id:
+                tournament_data = db_manager.fetchone(
+                    "tournaments",
+                    "SELECT name FROM tournaments WHERE id = ?",
+                    (tournament_id,),
+                )
+                if tournament_data:
+                    tournament_name = tournament_data[0]
+
+            # Отправляем результат в канал турнира
+            results_channel = None
+            for guild in bot.guilds:
+                results_channel = discord.utils.get(
+                    guild.text_channels, name=f"{tournament_name}-results"
+                )
+                if results_channel:
+                    break
+
+            if results_channel:
+                embed = discord.Embed(
+                    title=f"🏆 Турнирный матч завершен | ID: {match_id}",
+                    description=(
+                        f"**Турнир:** {tournament_name}\n"
+                        f"**Режим:** {MODE_NAMES.get(mode, 'Unknown')}\n"
+                        f"**Игроки:** {player1} vs {player2}\n"
+                        f"**Счет:** {score1}-{score2}\n"
+                        f"**Победитель:** {presumed_winner}"
+                    ),
+                    color=discord.Color.green(),
+                )
+                embed.set_image(url=screenshot)
+                await results_channel.send(embed=embed)
+            else:
+                print(f"⚠ Канал {tournament_name}-results не найден")
+
+            # Уведомляем игроков
+            try:
+                winner_id = get_discord_id_by_nickname(presumed_winner)
+                loser_name = player2 if presumed_winner == player1 else player1
+                loser_id = get_discord_id_by_nickname(loser_name)
+
+                if winner_id:
+                    winner_user = await bot.fetch_user(winner_id)
+                    await winner_user.send(
+                        "✅ Ваш результат турнирного матча подтвержден!"
+                    )
+                if loser_id:
+                    loser_user = await bot.fetch_user(loser_id)
+                    await loser_user.send(f"ℹ️ Ваш турнирный матч #{match_id} завершен")
+            except Exception as e:
+                print(f"Ошибка уведомления игроков: {e}")
+
+            await ctx.send("✅ Результат турнирного матча подтвержден!")
+            return
+
+        # Для обычных матчей - сохраняем для подтверждения оппонентом
         pending_player_confirmations[match_id] = {
             "match_id": match_id,
             "player1": player1,
@@ -2110,15 +2168,29 @@ def setup(bot):
             "screenshot": screenshot,
             "submitter_id": ctx.author.id,
             "submitter_name": submitter_name,
-            "opponent_id": opponent_id,
-            "opponent_name": opponent_name,
             "mode": mode,
             "timestamp": datetime.now(),
         }
 
+        # Определяем оппонента
+        opponent_name = player2 if submitter_name == player1 else player1
+
+        # Получаем discord_id оппонента
+        opponent_data = db_manager.fetchone(
+            "players",
+            "SELECT discordid FROM players WHERE playername = ?",
+            (opponent_name,),
+        )
+
+        if not opponent_data:
+            await ctx.send("❌ Не удалось найти оппонента в системе")
+            return
+
+        opponent_id = int(opponent_data[0])
+
         # Отправляем запрос подтверждения оппоненту
         try:
-            opponent_user = await global_bot.fetch_user(opponent_id)
+            opponent_user = await bot.fetch_user(opponent_id)
 
             embed = discord.Embed(
                 title="🔔 Требуется подтверждение результата",
@@ -2148,37 +2220,6 @@ def setup(bot):
             await ctx.send(
                 "❌ Не удалось отправить запрос подтверждения оппоненту. Обратитесь к администратору."
             )
-
-        if matchtype == 2:
-            # Получаем название турнира из БД
-            tournament_data = db_manager.fetchone(
-                "matches",
-                "SELECT tournament_id FROM matches WHERE matchid = ?",
-                (match_id,),
-            )
-
-            if tournament_data:
-                tournament_name = tournament_data[0]
-                results_channel = discord.utils.get(
-                    bot.get_all_channels(), name=f"{tournament_name}-results"
-                )
-
-                if results_channel:
-                    # Создаем embed для турнирного канала
-                    embed = discord.Embed(
-                        title=f"🏆 Турнирный матч завершен | ID: {match_id}",
-                        description=(
-                            f"**Игроки:** {player1} vs {player2}\n"
-                            f"**Счет:** {scores}\n"
-                            f"**Победитель:** {player1 if int(scores.split('-')[0]) > int(scores.split('-')[1]) else player2}"
-                        ),
-                        color=discord.Color.green(),
-                    )
-
-                    if ctx.message.attachments:
-                        embed.set_image(url=ctx.message.attachments[0].url)
-
-                    await results_channel.send(embed=embed)
 
     @bot.command()
     async def giveup(ctx):

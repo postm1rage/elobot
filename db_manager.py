@@ -20,7 +20,7 @@ class DBManager:
         self._db_files = {
             "players": "elobotplayers.db",
             "matches": "elobotmatches.db",
-            "tournaments": "elotournaments.db",  # Добавляем новую БД
+            "tournaments": "elotournaments.db",
         }
 
         # Инициализация таблиц при первом запуске
@@ -32,68 +32,35 @@ class DBManager:
             # Инициализация базы игроков
             conn = sqlite3.connect(self._db_files["players"])
             try:
-                # Проверяем существование таблицы
-                table_exists = conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name='players'"
-                ).fetchone()
-
-                if table_exists:
-                    # Проверяем существующие колонки
-                    cursor = conn.execute("PRAGMA table_info(players)")
-                    columns = {column[1]: column for column in cursor.fetchall()}
-
-                    # Добавляем недостающие колонки
-                    if "isbanned" not in columns:
-                        conn.execute(
-                            "ALTER TABLE players ADD COLUMN isbanned BOOLEAN DEFAULT 0"
-                        )
-                        logger.info("Added isbanned column to players table")
-
-                    if "in_queue" not in columns:
-                        conn.execute(
-                            "ALTER TABLE players ADD COLUMN in_queue INTEGER DEFAULT 0"
-                        )
-                        logger.info("Added in_queue column to players table")
-
-                    # Добавляем новое поле для черного списка турниров
-                    if "isblacklisted" not in columns:
-                        conn.execute(
-                            "ALTER TABLE players ADD COLUMN isblacklisted BOOLEAN DEFAULT 0"
-                        )
-                        logger.info("Added isblacklisted column to players table")
-
-                # Создаем таблицу с актуальной структурой
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS players (
-                        playerid INTEGER PRIMARY KEY AUTOINCREMENT,
-                        playername TEXT NOT NULL UNIQUE,
-                        discordid TEXT NOT NULL UNIQUE,
-                        currentelo INTEGER DEFAULT 1000,
-                        elo_station5f INTEGER DEFAULT 1000,
-                        elo_mots INTEGER DEFAULT 1000,
-                        elo_12min INTEGER DEFAULT 1000,
-                        wins INTEGER DEFAULT 0,
-                        losses INTEGER DEFAULT 0,
-                        ties INTEGER DEFAULT 0,
-                        wins_station5f INTEGER DEFAULT 0,
-                        losses_station5f INTEGER DEFAULT 0,
-                        ties_station5f INTEGER DEFAULT 0,
-                        wins_mots INTEGER DEFAULT 0,
-                        losses_mots INTEGER DEFAULT 0,
-                        ties_mots INTEGER DEFAULT 0,
-                        wins_12min INTEGER DEFAULT 0,
-                        losses_12min INTEGER DEFAULT 0,
-                        ties_12min INTEGER DEFAULT 0,
-                        currentmatches INTEGER DEFAULT 0,
-                        in_queue INTEGER DEFAULT 0,
-                        isbanned BOOLEAN DEFAULT 0,
-                        isblacklisted BOOLEAN DEFAULT 0
-                    )
-                    """
+                conn.execute("""
+                CREATE TABLE IF NOT EXISTS players (
+                    playerid INTEGER PRIMARY KEY AUTOINCREMENT,
+                    playername TEXT NOT NULL UNIQUE,
+                    discordid TEXT NOT NULL UNIQUE,
+                    currentelo INTEGER DEFAULT 1000,
+                    elo_station5f INTEGER DEFAULT 1000,
+                    elo_mots INTEGER DEFAULT 1000,
+                    elo_12min INTEGER DEFAULT 1000,
+                    wins INTEGER DEFAULT 0,
+                    losses INTEGER DEFAULT 0,
+                    ties INTEGER DEFAULT 0,
+                    wins_station5f INTEGER DEFAULT 0,
+                    losses_station5f INTEGER DEFAULT 0,
+                    ties_station5f INTEGER DEFAULT 0,
+                    wins_mots INTEGER DEFAULT 0,
+                    losses_mots INTEGER DEFAULT 0,
+                    ties_mots INTEGER DEFAULT 0,
+                    wins_12min INTEGER DEFAULT 0,
+                    losses_12min INTEGER DEFAULT 0,
+                    ties_12min INTEGER DEFAULT 0,
+                    currentmatches INTEGER DEFAULT 0,
+                    in_queue INTEGER DEFAULT 0,
+                    isbanned BOOLEAN DEFAULT 0,
+                    isblacklisted BOOLEAN DEFAULT 0
                 )
+                """)
                 conn.commit()
-                logger.info("Players database initialized/updated")
+                logger.info("Players database initialized")
             except Exception as e:
                 logger.error(f"Error initializing players database: {e}")
                 raise
@@ -103,48 +70,24 @@ class DBManager:
             # Инициализация базы матчей
             conn = sqlite3.connect(self._db_files["matches"])
             try:
-                # Проверяем существование таблицы
-                table_exists = conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name='matches'"
-                ).fetchone()
-
-                if table_exists:
-                    # Проверяем существующие колонки
-                    cursor = conn.execute("PRAGMA table_info(matches)")
-                    columns = {column[1]: column for column in cursor.fetchall()}
-
-                    # Добавляем недостающие колонки
-                    if "matchtype" not in columns:
-                        conn.execute(
-                            "ALTER TABLE matches ADD COLUMN matchtype INTEGER DEFAULT 1"
-                        )
-                        logger.info("Added matchtype column to matches table")
-                    if "tournament_id" not in columns:
-                        conn.execute(
-                            "ALTER TABLE matches ADD COLUMN tournament_id INTEGER DEFAULT 0"
-                        )
-                        logger.info("Added matchtype column to matches table")
-                # Создаем таблицу с актуальной структурой
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS matches (
-                        matchid INTEGER PRIMARY KEY AUTOINCREMENT,
-                        mode INTEGER NOT NULL,
-                        player1 TEXT NOT NULL,
-                        player2 TEXT NOT NULL,
-                        isover INTEGER DEFAULT 0,
-                        player1score INTEGER,
-                        player2score INTEGER,
-                        isverified INTEGER DEFAULT 0,
-                        map TEXT,
-                        start_time DATETIME,
-                        matchtype INTEGER DEFAULT 1,
-                        tournament_id TEXT DEFAULT 0
-                    )
-                    """
+                conn.execute("""
+                CREATE TABLE IF NOT EXISTS matches (
+                    matchid INTEGER PRIMARY KEY AUTOINCREMENT,
+                    mode INTEGER NOT NULL,
+                    player1 TEXT NOT NULL,
+                    player2 TEXT NOT NULL,
+                    isover INTEGER DEFAULT 0,
+                    player1score INTEGER,
+                    player2score INTEGER,
+                    isverified INTEGER DEFAULT 0,
+                    map TEXT,
+                    start_time DATETIME,
+                    matchtype INTEGER DEFAULT 1,
+                    tournament_id TEXT DEFAULT 0
                 )
+                """)
                 conn.commit()
-                logger.info("Matches database initialized/updated")
+                logger.info("Matches database initialized")
             except Exception as e:
                 logger.error(f"Error initializing matches database: {e}")
                 raise
@@ -154,8 +97,7 @@ class DBManager:
             # Инициализация базы турниров
             conn = sqlite3.connect(self._db_files["tournaments"])
             try:
-                conn.execute(
-                    """
+                conn.execute("""
                 CREATE TABLE IF NOT EXISTS tournaments (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT UNIQUE NOT NULL,
@@ -163,11 +105,9 @@ class DBManager:
                     started BOOLEAN DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
-                """
-                )
+                """)
 
-                conn.execute(
-                    """
+                conn.execute("""
                 CREATE TABLE IF NOT EXISTS tournament_participants (
                     tournament_id INTEGER,
                     user_id TEXT NOT NULL,
@@ -175,20 +115,27 @@ class DBManager:
                     FOREIGN KEY(tournament_id) REFERENCES tournaments(id),
                     PRIMARY KEY(tournament_id, user_id)
                 )
-                """
-                )
+                """)
 
-                conn.execute(
-                    """
+                conn.execute("""
                 CREATE TABLE IF NOT EXISTS tournament_bans (
                     tournament_id INTEGER,
                     user_id TEXT NOT NULL,
                     FOREIGN KEY(tournament_id) REFERENCES tournaments(id),
                     PRIMARY KEY(tournament_id, user_id)
                 )
-                """
-                )
+                """)
 
+                conn.execute("""
+                CREATE TABLE IF NOT EXISTS active_tours (
+                    tournament_id INTEGER PRIMARY KEY,
+                    current_round INTEGER NOT NULL,
+                    participants TEXT NOT NULL,
+                    winners TEXT NOT NULL,
+                    matches TEXT NOT NULL,
+                    FOREIGN KEY(tournament_id) REFERENCES tournaments(id)
+                )
+                """)
                 conn.commit()
                 logger.info("Tournaments database initialized")
             except Exception as e:

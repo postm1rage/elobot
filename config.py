@@ -35,6 +35,7 @@ LEADERBOARD_MODES = {
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+intents.dm_messages = True
 
 bot = commands.Bot(
     intents=intents,
