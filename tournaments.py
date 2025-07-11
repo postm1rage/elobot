@@ -99,16 +99,16 @@ class Tournaments(commands.Cog):
                 channels = {
                     "category": category,
                     "info": discord.utils.get(
-                        category.channels, name=f"{category.name}-info"
+                        category.channels, name=f"{category.name}✨﹒info"
                     ),
                     "results": discord.utils.get(
-                        category.channels, name=f"{category.name}-results"
+                        category.channels, name=f"{category.name}✨﹒results"
                     ),
                     "matches": discord.utils.get(
-                        category.channels, name=f"{category.name}-matches"
+                        category.channels, name=f"{category.name}✨﹒matches"
                     ),
                     "register": discord.utils.get(
-                        category.channels, name=f"{category.name}-register"
+                        category.channels, name=f"{category.name}✨﹒register"
                     ),
                 }
                 self.tournaments[category.name]["channels"] = channels
@@ -272,16 +272,16 @@ class Tournaments(commands.Cog):
         # Создаем текстовые каналы с стандартными правами
         channels = {
             "info": await guild.create_text_channel(
-                f"{name}-info", category=category, topic=f"Информация о турнире {name}"
+                f"✨﹒info", category=category, topic=f"Информация о турнире {name}"
             ),
             "results": await guild.create_text_channel(
-                f"{name}-results", category=category, topic=f"Результаты турнира {name}"
+                f"✨﹒results", category=category, topic=f"Результаты турнира {name}"
             ),
             "matches": await guild.create_text_channel(
-                f"{name}-matches", category=category, topic=f"Турнирные матчи {name}"
+                f"✨﹒matches", category=category, topic=f"Турнирные матчи {name}"
             ),
             "register": await guild.create_text_channel(
-                f"{name}-register",
+                f"✨﹒register",
                 category=category,
                 topic=f"Регистрация на турнир {name}",
             ),
@@ -398,7 +398,7 @@ class Tournaments(commands.Cog):
             # Отправляем подтверждение
             embed = discord.Embed(
                 title="✅ Победитель установлен",
-                description=f"В матче #{match_id} турнира **{tournament_name}**",
+                description=f"В матче #{match_id} турнира",
                 color=discord.Color.green(),
             )
             embed.add_field(name="Победитель", value=winner_name, inline=True)
@@ -418,7 +418,7 @@ class Tournaments(commands.Cog):
 
             # Отправляем результат в канал результатов турнира
             results_channel = discord.utils.get(
-                ctx.guild.channels, name=f"{tournament_name}-results"
+                ctx.guild.channels, name=f"{tournament_name}✨﹒results"
             )
             if results_channel:
                 result_embed = discord.Embed(
@@ -528,55 +528,50 @@ class Tournaments(commands.Cog):
                 tournament_id=tournament["id"],
             )
 
-    @commands.command()
-    @commands.check(lambda ctx: ctx.author.id == MODERATOR_ID)
-    async def tban(self, ctx, member: discord.Member):
-        """Бан игрока в текущем турнире"""
-        tournament_name = ctx.channel.category.name
+   #@commands.command()
+   #@commands.check(lambda ctx: ctx.author.id == MODERATOR_ID)
+   #async def tban(self, ctx, member: discord.Member):
+   #    """Бан игрока в текущем турнире"""
+   #    tournament_name = ctx.channel.category.name
 
-        if tournament_name not in self.tournaments:
-            return
+   #    if tournament_name not in self.tournaments:
+   #        return
 
-        if member.id in self.tournaments[tournament_name]["banned"]:
-            return
+   #    if member.id in self.tournaments[tournament_name]["banned"]:
+   #        return
 
-        # Добавляем в базу
-        db_manager.execute(
-            "tournaments",
-            """INSERT INTO tournament_bans (tournament_id, user_id)
-            VALUES (?, ?)""",
-            (self.tournaments[tournament_name]["id"], str(member.id)),
-        )
+   #    # Добавляем в базу
+   #    db_manager.execute(
+   #        "tournaments",
+   #        """INSERT INTO tournament_bans (tournament_id, user_id)
+   #        VALUES (?, ?)""",
+   #        (self.tournaments[tournament_name]["id"], str(member.id)),
+   #    )
 
-        self.tournaments[tournament_name]["banned"].append(member.id)
+   #    self.tournaments[tournament_name]["banned"].append(member.id)
 
-        # Удаляем из участников если был зарегистрирован
-        player_name = None
-        # Находим ник игрока
-        player_data = db_manager.fetchone(
-            "players",
-            "SELECT playername FROM players WHERE discordid = ?",
-            (str(member.id),)
-        )
-        if player_data:
-            player_name = player_data[0]
-            if player_name in self.tournaments[tournament_name]["participants"]:
-                # Обновляем список участников
-                new_list = [p for p in self.tournaments[tournament_name]["participants"] if p != player_name]
-                new_participants_str = ' '.join(new_list)
-                
-                db_manager.execute(
-                    "tournaments",
-                    "UPDATE tournaments SET currentplayers = ? WHERE id = ?",
-                    (new_participants_str, self.tournaments[tournament_name]["id"])
-                )
-                self.tournaments[tournament_name]["participants"] = new_list
+   #    # Удаляем из участников если был зарегистрирован
+   #    if any(
+   #        p["id"] == member.id
+   #        for p in self.tournaments[tournament_name]["participants"]
+   #    ):
+   #        db_manager.execute(
+   #            "tournaments",
+   #            """DELETE FROM tournament_participants 
+   #            WHERE tournament_id = ? AND user_id = ?""",
+   #            (self.tournaments[tournament_name]["id"], str(member.id)),
+   #        )
+   #        self.tournaments[tournament_name]["participants"] = [
+   #            p
+   #            for p in self.tournaments[tournament_name]["participants"]
+   #            if p["id"] != member.id
+   #        ]
 
-        await self.clean_user_messages(member.id, ctx.channel.category)
+   #    await self.clean_user_messages(member.id, ctx.channel.category)
 
-        # Обновляем списки
-        await self.update_lists(tournament_name)
-        await self.update_all_banned_lists()
+   #    # Обновляем списки
+   #    await self.update_lists(tournament_name)
+   #    await self.update_all_banned_lists()
 
     @commands.command()
     @commands.check(lambda ctx: ctx.author.id == MODERATOR_ID)
@@ -703,10 +698,10 @@ class Tournaments(commands.Cog):
                     continue
 
     @commands.command(name="unregister")
-    @commands.check(lambda ctx: ctx.channel.name.endswith("-register"))
+    @commands.check(lambda ctx: ctx.channel.name.endswith("✨﹒register"))
     async def unregister(self, ctx):
         """Позволяет игроку отменить регистрацию на турнир"""
-        tournament_name = ctx.channel.name.replace("-register", "")
+        tournament_name = ctx.channel.name.replace("✨﹒register", "")
         user = ctx.author
 
         if tournament_name not in self.tournaments:
@@ -798,27 +793,26 @@ class Tournaments(commands.Cog):
                         f"**Забаненные игроки:**\n{banned}"
                     )
 
-            # Черный список
-            if not tournament.get("blacklist_msg"):
-                tournament["blacklist_msg"] = await channels["info"].send(
-                    f"**Черный список:**\n{blacklist_mentions}"
-                )
-            else:
-                try:
-                    await tournament["blacklist_msg"].edit(
-                        content=f"**Черный список:**\n{blacklist_mentions}"
-                    )
-                except discord.NotFound:
-                    tournament["blacklist_msg"] = await channels["info"].send(
-                        f"**Черный список:**\n{blacklist_mentions}"
-                    )
+            #if not tournament.get("blacklist_msg"):
+            #    tournament["blacklist_msg"] = await channels["info"].send(
+            #        f"**Черный список:**\n{blacklist_mentions}"
+            #    )
+            #else:
+            #    try:
+            #        await tournament["blacklist_msg"].edit(
+            #            content=f"**Черный список:**\n{blacklist_mentions}"
+            #        )
+            #    except discord.NotFound:
+            #        tournament["blacklist_msg"] = await channels["info"].send(
+            #            f"**Черный список:**\n{blacklist_mentions}"
+            #        )
 
     @commands.Cog.listener()
     async def on_message(self, message):
         if message.author.bot:
             return
 
-        if not message.channel.name.endswith("-register"):
+        if not message.channel.name.endswith("✨﹒register"):
             return
 
         # Удаляем все сообщения кроме команд register/unregister
@@ -838,7 +832,7 @@ class Tournaments(commands.Cog):
 
     async def process_registration(self, message):
         """Обрабатывает регистрацию на турнир"""
-        tournament_name = message.channel.name.replace("-register", "")
+        tournament_name = message.channel.name.replace("✨﹒register", "")
         user = message.author
 
         if tournament_name not in self.tournaments:

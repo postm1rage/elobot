@@ -2067,97 +2067,98 @@ def setup(bot):
 
         # Обработка турнирных матчей
         if matchtype == 2:
-            # Обновляем запись матча
-            db_manager.execute(
-                "matches",
-                """
-                UPDATE matches 
-                SET player1score = ?, player2score = ?, isover = 1, isverified = 1
-                WHERE matchid = ?
-                """,
-                (score1, score2, match_id),
-            )
-
-            # Обновляем статистику
-            if score1 > score2:
-                db_manager.execute(
-                    "players",
-                    "UPDATE players SET wins = wins + 1 WHERE playername = ?",
-                    (player1,),
-                )
-                db_manager.execute(
-                    "players",
-                    "UPDATE players SET losses = losses + 1 WHERE playername = ?",
-                    (player2,),
-                )
-            else:
-                db_manager.execute(
-                    "players",
-                    "UPDATE players SET wins = wins + 1 WHERE playername = ?",
-                    (player2,),
-                )
-                db_manager.execute(
-                    "players",
-                    "UPDATE players SET losses = losses + 1 WHERE playername = ?",
-                    (player1,),
-                )
-
-            # Получаем название турнира
-            tournament_name = "Неизвестный турнир"
-            if tournament_id:
-                tournament_data = db_manager.fetchone(
-                    "tournaments",
-                    "SELECT name FROM tournaments WHERE id = ?",
-                    (tournament_id,),
-                )
-                if tournament_data:
-                    tournament_name = tournament_data[0]
-
-            # Отправляем результат в канал турнира
-            results_channel = None
-            for guild in bot.guilds:
-                results_channel = discord.utils.get(
-                    guild.text_channels, name=f"{tournament_name}-results"
-                )
-                if results_channel:
-                    break
-
-            if results_channel:
-                embed = discord.Embed(
-                    title=f"🏆 Турнирный матч завершен | ID: {match_id}",
-                    description=(
-                        f"**Турнир:** {tournament_name}\n"
-                        f"**Режим:** {MODE_NAMES.get(mode, 'Unknown')}\n"
-                        f"**Игроки:** {player1} vs {player2}\n"
-                        f"**Счет:** {score1}-{score2}\n"
-                        f"**Победитель:** {presumed_winner}"
-                    ),
-                    color=discord.Color.green(),
-                )
-                embed.set_image(url=screenshot)
-                await results_channel.send(embed=embed)
-            else:
-                print(f"⚠ Канал {tournament_name}-results не найден")
-
-            # Уведомляем игроков
-            try:
-                winner_id = get_discord_id_by_nickname(presumed_winner)
-                loser_name = player2 if presumed_winner == player1 else player1
-                loser_id = get_discord_id_by_nickname(loser_name)
-
-                if winner_id:
-                    winner_user = await bot.fetch_user(winner_id)
-                    await winner_user.send(
-                        "✅ Ваш результат турнирного матча подтвержден!"
-                    )
-                if loser_id:
-                    loser_user = await bot.fetch_user(loser_id)
-                    await loser_user.send(f"ℹ️ Ваш турнирный матч #{match_id} завершен")
-            except Exception as e:
-                print(f"Ошибка уведомления игроков: {e}")
-
-            await ctx.send("✅ Результат турнирного матча подтвержден!")
             return
+           # # Обновляем запись матча
+           # db_manager.execute(
+           #     "matches",
+           #     """
+           #     UPDATE matches 
+           #     SET player1score = ?, player2score = ?, isover = 1, isverified = 1
+           #     WHERE matchid = ?
+           #     """,
+           #     (score1, score2, match_id),
+           # )
+#
+           # # Обновляем статистику
+           # if score1 > score2:
+           #     db_manager.execute(
+           #         "players",
+           #         "UPDATE players SET wins = wins + 1 WHERE playername = ?",
+           #         (player1,),
+           #     )
+           #     db_manager.execute(
+           #         "players",
+           #         "UPDATE players SET losses = losses + 1 WHERE playername = ?",
+           #         (player2,),
+           #     )
+           # else:
+           #     db_manager.execute(
+           #         "players",
+           #         "UPDATE players SET wins = wins + 1 WHERE playername = ?",
+           #         (player2,),
+           #     )
+           #     db_manager.execute(
+           #         "players",
+           #         "UPDATE players SET losses = losses + 1 WHERE playername = ?",
+           #         (player1,),
+           #     )
+#
+           # # Получаем название турнира
+           # tournament_name = "Неизвестный турнир"
+           # if tournament_id:
+           #     tournament_data = db_manager.fetchone(
+           #         "tournaments",
+           #         "SELECT name FROM tournaments WHERE id = ?",
+           #         (tournament_id,),
+           #     )
+           #     if tournament_data:
+           #         tournament_name = tournament_data[0]
+#
+           # # Отправляем результат в канал турнира
+           # results_channel = None
+           # for guild in bot.guilds:
+           #     results_channel = discord.utils.get(
+           #         guild.text_channels, name=f"{tournament_name}-results"
+           #     )
+           #     if results_channel:
+           #         break
+#
+           # if results_channel:
+           #     embed = discord.Embed(
+           #         title=f"🏆 Турнирный матч завершен | ID: {match_id}",
+           #         description=(
+           #             f"**Турнир:** {tournament_name}\n"
+           #             f"**Режим:** {MODE_NAMES.get(mode, 'Unknown')}\n"
+           #             f"**Игроки:** {player1} vs {player2}\n"
+           #             f"**Счет:** {score1}-{score2}\n"
+           #             f"**Победитель:** {presumed_winner}"
+           #         ),
+           #         color=discord.Color.green(),
+           #     )
+           #     embed.set_image(url=screenshot)
+           #     await results_channel.send(embed=embed)
+           # else:
+           #     print(f"⚠ Канал {tournament_name}-results не найден")
+#
+           # # Уведомляем игроков
+           # try:
+           #     winner_id = get_discord_id_by_nickname(presumed_winner)
+           #     loser_name = player2 if presumed_winner == player1 else player1
+           #     loser_id = get_discord_id_by_nickname(loser_name)
+#
+           #     if winner_id:
+           #         winner_user = await bot.fetch_user(winner_id)
+           #         await winner_user.send(
+           #             "✅ Ваш результат турнирного матча подтвержден!"
+           #         )
+           #     if loser_id:
+           #         loser_user = await bot.fetch_user(loser_id)
+           #         await loser_user.send(f"ℹ️ Ваш турнирный матч #{match_id} завершен")
+           # except Exception as e:
+           #     print(f"Ошибка уведомления игроков: {e}")
+#
+           # await ctx.send("✅ Результат турнирного матча подтвержден!")
+           # return
 
         # Для обычных матчей - сохраняем для подтверждения оппонентом
         pending_player_confirmations[match_id] = {
