@@ -108,32 +108,11 @@ class DBManager:
                 """)
 
                 conn.execute("""
-                CREATE TABLE IF NOT EXISTS tournament_participants (
-                    tournament_id INTEGER,
-                    user_id TEXT NOT NULL,
-                    player_name TEXT NOT NULL,
-                    FOREIGN KEY(tournament_id) REFERENCES tournaments(id),
-                    PRIMARY KEY(tournament_id, user_id)
-                )
-                """)
-
-                conn.execute("""
                 CREATE TABLE IF NOT EXISTS tournament_bans (
                     tournament_id INTEGER,
                     user_id TEXT NOT NULL,
                     FOREIGN KEY(tournament_id) REFERENCES tournaments(id),
                     PRIMARY KEY(tournament_id, user_id)
-                )
-                """)
-
-                conn.execute("""
-                CREATE TABLE IF NOT EXISTS active_tours (
-                    tournament_id INTEGER PRIMARY KEY,
-                    current_round INTEGER NOT NULL,
-                    participants TEXT NOT NULL,
-                    winners TEXT NOT NULL,
-                    matches TEXT NOT NULL,
-                    FOREIGN KEY(tournament_id) REFERENCES tournaments(id)
                 )
                 """)
                 conn.commit()

@@ -13,6 +13,7 @@ class Tour:
     def __init__(self, bot, tournament_name, participants, slots, cog):
         self.bot = bot
         self.name = tournament_name
+        # Участники теперь просто список ников
         self.participants = participants
         self.slots = slots
         self.current_round = 1
@@ -20,7 +21,6 @@ class Tour:
         self.winners = []
         self.is_finished = False
         self.cog = cog
-        self.tournament_id = None  # Добавляем ID турнира
 
     async def save_state(self):
         """Сохраняет текущее состояние турнира в БД"""
@@ -72,42 +72,6 @@ class Tour:
                     tour_data["matches"],
                 ),
             )
-
-            async def load_state(self):
-                """Загружает состояние турнира из БД"""
-                import json
-
-                tour = db_manager.fetchone(
-                    "tournaments",
-                    """SELECT id, current_round, participants, winners, matches 
-                    FROM active_tours 
-                    WHERE tournament_id = (
-                        SELECT id FROM tournaments WHERE name = ?
-                    )""",
-                    (self.name,),
-                )
-
-                if tour:
-                    self.tournament_id = tour[0]
-                    self.current_round = tour[1]
-                    self.participants = json.loads(tour[2])
-                    self.winners = json.loads(tour[3])
-
-                    # Восстанавливаем матчи
-                    self.matches = []
-                    for m in json.loads(tour[4]):
-                        self.matches.append(
-                            {
-                                "id": m["id"],
-                                "player1": m["player1"],
-                                "player2": m["player2"],
-                                "winner": m["winner"],
-                                "is_finished": m["is_finished"],
-                            }
-                        )
-
-                    return True
-                return False
 
     async def start_round(self):
         """Начинает новый тур турнира"""
