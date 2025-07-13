@@ -32,7 +32,8 @@ class DBManager:
             # Инициализация базы игроков
             conn = sqlite3.connect(self._db_files["players"])
             try:
-                conn.execute("""
+                conn.execute(
+                    """
                 CREATE TABLE IF NOT EXISTS players (
                     playerid INTEGER PRIMARY KEY AUTOINCREMENT,
                     playername TEXT NOT NULL UNIQUE,
@@ -58,7 +59,8 @@ class DBManager:
                     isbanned BOOLEAN DEFAULT 0,
                     isblacklisted BOOLEAN DEFAULT 0
                 )
-                """)
+                """
+                )
                 conn.commit()
                 logger.info("Players database initialized")
             except Exception as e:
@@ -70,7 +72,8 @@ class DBManager:
             # Инициализация базы матчей
             conn = sqlite3.connect(self._db_files["matches"])
             try:
-                conn.execute("""
+                conn.execute(
+                    """
                 CREATE TABLE IF NOT EXISTS matches (
                     matchid INTEGER PRIMARY KEY AUTOINCREMENT,
                     mode INTEGER NOT NULL,
@@ -85,7 +88,8 @@ class DBManager:
                     matchtype INTEGER DEFAULT 1,
                     tournament_id TEXT DEFAULT 0
                 )
-                """)
+                """
+                )
                 conn.commit()
                 logger.info("Matches database initialized")
             except Exception as e:
@@ -97,24 +101,47 @@ class DBManager:
             # Инициализация базы турниров
             conn = sqlite3.connect(self._db_files["tournaments"])
             try:
-                conn.execute("""
+                conn.execute(
+                    """
                 CREATE TABLE IF NOT EXISTS tournaments (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT UNIQUE NOT NULL,
                     slots INTEGER NOT NULL,
                     started BOOLEAN DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    currenttour INTEGER DEFAULT 1,
+                    isover BOOLEAN DEFAULT 0,
+                    currentplayers TEXT DEFAULT '',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    current_round INTEGER DEFAULT 1,
+                    participants TEXT DEFAULT '[]',
+                    winners TEXT DEFAULT '[]',
+                    matches TEXT DEFAULT '[]'
                 )
-                """)
+                """
+                )
 
-                conn.execute("""
+                conn.execute(
+                    """
+                CREATE TABLE IF NOT EXISTS tournament_participants (
+                    tournament_id INTEGER,
+                    user_id TEXT NOT NULL,
+                    player_name TEXT NOT NULL,
+                    FOREIGN KEY(tournament_id) REFERENCES tournaments(id),
+                    PRIMARY KEY(tournament_id, user_id)
+                )
+                """
+                )
+
+                conn.execute(
+                    """
                 CREATE TABLE IF NOT EXISTS tournament_bans (
                     tournament_id INTEGER,
                     user_id TEXT NOT NULL,
                     FOREIGN KEY(tournament_id) REFERENCES tournaments(id),
                     PRIMARY KEY(tournament_id, user_id)
                 )
-                """)
+                """
+                )
                 conn.commit()
                 logger.info("Tournaments database initialized")
             except Exception as e:
