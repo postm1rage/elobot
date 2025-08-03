@@ -23,7 +23,7 @@ ELO Bot - это Discord бот для организации рейтингов
 ### 1. Клонирование репозитория
 
 ```bash
-git clone https://github.com/ваш-репозиторий/elo-bot.git
+git clone https://github.com/postm1rage/elobot
 cd elo-bot
 ```
 
